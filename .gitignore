@@ -1,0 +1,10 @@
+@"
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.vercel/
+Branding Alucinando/
+NUEVO BRANDING ALUCINANDO/
+"@ | Set-Content -Encoding UTF8 .gitignore
