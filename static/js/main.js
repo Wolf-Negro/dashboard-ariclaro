@@ -348,11 +348,11 @@ function renderDashboard() {
                 
                 <div class="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm relative group hover:border-violet-200 transition-all min-h-[400px]">
                     <div class="flex items-center justify-between mb-8">
-                        <h3 class="font-bold text-lg text-slate-800">Control de Presupuesto</h3>
-                        <div class="w-10 h-10 bg-violet-50 rounded-xl flex items-center justify-center"><i data-lucide="wallet" class="text-violet-600 w-5 h-5"></i></div>
+                        <h3 class="font-bold text-lg text-slate-800">Tendencia CPL</h3>
+                        <div class="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center"><i data-lucide="line-chart" class="text-indigo-600 w-5 h-5"></i></div>
                     </div>
-                    <div class="relative h-64">
-                        <canvas id="doughnutChart"></canvas>
+                    <div class="h-64">
+                        <canvas id="lineChart"></canvas>
                     </div>
                 </div>
 
@@ -368,11 +368,11 @@ function renderDashboard() {
 
                 <div class="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm relative group hover:border-violet-200 transition-all min-h-[400px]">
                     <div class="flex items-center justify-between mb-8">
-                        <h3 class="font-bold text-lg text-slate-800">Tendencia CPL</h3>
-                        <div class="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center"><i data-lucide="line-chart" class="text-indigo-600 w-5 h-5"></i></div>
+                        <h3 class="font-bold text-lg text-slate-800">Control de Presupuesto</h3>
+                        <div class="w-10 h-10 bg-violet-50 rounded-xl flex items-center justify-center"><i data-lucide="wallet" class="text-violet-600 w-5 h-5"></i></div>
                     </div>
-                    <div class="h-64">
-                        <canvas id="lineChart"></canvas>
+                    <div class="relative h-64">
+                        <canvas id="doughnutChart"></canvas>
                     </div>
                 </div>
 
