@@ -41,27 +41,41 @@ def process_meta_data(data):
         date_str = day_entry.get('date_start')
         spend = float(day_entry.get('spend', 0.0))
         leads = 0
+        visits = 0
         actions = day_entry.get('actions', [])
         for action in actions:
             # Capturar solo la métrica principal de "lead" (Clientes potenciales)
-            # Se eliminan los otros tipos para evitar duplicidad según auditoría de data
             if action['action_type'] == 'lead':
                 leads += int(action['value'])
+            # NUEVO: Capturar visitas a la página (Landing Page Views)
+            if action['action_type'] == 'landing_page_view':
+                visits += int(action['value'])
         
         ctr = float(day_entry.get('unique_inline_link_click_ctr', day_entry.get('inline_link_click_ctr', 0.0)))
+        reach = int(day_entry.get('reach', 0))
+        impressions = int(day_entry.get('impressions', 0))
+        clicks = int(day_entry.get('clicks', 0))
         
         if date_str not in by_date:
             by_date[date_str] = {
                 "spend": 0.0,
                 "leads": 0,
+                "visits": 0,
                 "ctr_sum": 0.0,
-                "ctr_count": 0
+                "ctr_count": 0,
+                "reach": 0,
+                "impressions": 0,
+                "clicks": 0
             }
         
         by_date[date_str]["spend"] += spend
         by_date[date_str]["leads"] += leads
+        by_date[date_str]["visits"] += visits
         by_date[date_str]["ctr_sum"] += ctr
         by_date[date_str]["ctr_count"] += 1
+        by_date[date_str]["reach"] += reach
+        by_date[date_str]["impressions"] += impressions
+        by_date[date_str]["clicks"] += clicks
 
     # Convertir a lista y formatear
     for date_str, values in by_date.items():
@@ -70,6 +84,10 @@ def process_meta_data(data):
         
         spend = values["spend"]
         leads = values["leads"]
+        visits = values["visits"]
+        reach = values["reach"]
+        impressions = values["impressions"]
+        clicks = values["clicks"]
         avg_ctr = values["ctr_sum"] / values["ctr_count"] if values["ctr_count"] > 0 else 0.0
         
         processed.append({
@@ -77,6 +95,10 @@ def process_meta_data(data):
             "date_raw": date_str,
             "spend": spend,
             "leads": leads,
+            "visits": visits,
+            "reach": reach,
+            "impressions": impressions,
+            "clicks": clicks,
             "cpl": round(spend / leads, 2) if leads > 0 else 0.0,
             "ctr": round(avg_ctr, 2)
         })
@@ -117,7 +139,7 @@ def get_data():
         params = {
             'access_token': ACCESS_TOKEN,
             'level': 'account',
-            'fields': 'spend,actions,unique_inline_link_click_ctr,inline_link_click_ctr,date_start',
+            'fields': 'spend,actions,unique_inline_link_click_ctr,inline_link_click_ctr,reach,impressions,clicks,date_start',
             'time_increment': 1,
             'time_range': json.dumps({"since": since_date, "until": until_date}),
             'limit': '1000'
@@ -140,18 +162,47 @@ def get_data():
 
         total_spend = sum(d['spend'] for d in processed_data)
         total_leads = sum(d['leads'] for d in processed_data)
+        total_visits = sum(d['visits'] for d in processed_data)
+        total_reach = sum(d['reach'] for d in processed_data)
+        total_impressions = sum(d['impressions'] for d in processed_data)
+        total_clicks = sum(d['clicks'] for d in processed_data)
+        
         avg_cpl = round(total_spend / total_leads, 2) if total_leads > 0 else 0
         
         presupuesto_total = MONTHLY_BUDGET
         presupuesto_consumido = round(total_spend, 2)
         presupuesto_restante = round(max(0, presupuesto_total - presupuesto_consumido), 2)
 
+        # LOGS DE AUDITORÍA SOLICITADOS POR EL USUARIO
+        print("\n--- AUDITORÍA DE DATA EN TIEMPO REAL ---")
+        print(f"Fecha Hoy (Servidor Lima): {today_str}")
+        print(f"Mes consultado: {month}")
+        print(f"Cuentas Activas: {len(AD_ACCOUNT_IDS)}")
+        print(f"Gasto Total Mes: S/. {total_spend:,.2f}")
+        print(f"Leads Totales Mes: {total_leads}")
+        print(f"CPL Promedio Mensual: S/. {avg_cpl:,.2f}")
+        
+        # Encontrar data de hoy si existe
+        today_data = next((d for d in processed_data if d['date_raw'] == today_str), None)
+        if today_data:
+            print(f"--- MÉTRICAS DE HOY ({today_str}) ---")
+            print(f"Gasto Hoy: S/. {today_data['spend']:.2f}")
+            print(f"Leads Hoy: {today_data['leads']}")
+            print(f"CPL Hoy: S/. {today_data['cpl']:.2f}")
+        else:
+            print(f"--- NO HAY DATA AÚN PARA HOY ({today_str}) ---")
+        print("----------------------------------------\n")
+
         return jsonify({
             "status": "success",
             "kpis": {
                 "gastoTotal": f"S/. {presupuesto_consumido:,.2f}",
                 "leadsTotales": total_leads,
-                "costoPorLeadPromedio": f"S/. {avg_cpl:.2f}",
+                "reachTotal": total_reach,
+                "impressionsTotal": total_impressions,
+                "clicksTotal": total_clicks,
+                "visitsTotal": total_visits,
+                "costoPorLeadPromedio": f"S/. {avg_cpl:,.2f}",
                 "presupuestoConsumido": presupuesto_consumido,
                 "presupuestoRestante": presupuesto_restante
             },
