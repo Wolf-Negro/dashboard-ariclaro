@@ -71,6 +71,8 @@ def fetch_ghl_opportunities():
     """Trae TODAS las oportunidades del pipeline/stage configurado en GHL, paginando
     con meta.nextPageUrl (la API de GHL no soporta filtro de fecha en la búsqueda)."""
     if not (GHL_API_KEY and GHL_LOCATION_ID and GHL_PIPELINE_ID):
+        print("ADVERTENCIA: faltan variables de entorno de GHL (GHL_API_KEY / GHL_LOCATION_ID / "
+              "GHL_PIPELINE_ID) — Mensajes se mostrará en 0 hasta que se configuren.")
         return []
 
     headers = {
