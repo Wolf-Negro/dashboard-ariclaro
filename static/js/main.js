@@ -9,12 +9,9 @@ const mobileMenuToggle = document.getElementById('mobile-menu-toggle');
 const sidebar = document.getElementById('sidebar');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
 const pageTitle = document.getElementById('page-title');
-const monthFilter = document.getElementById('month-filter');
 
 // --- CONFIGURACIÓN DE LIMA (ZONA HORARIA ÚNICA) ---
 const TZ = 'America/Lima';
-const CACHE_KEY = 'ariclaro_cache_v1';
-const CACHE_DATE_KEY = 'ariclaro_cache_date_v1';
 
 function getTodayString() {
     const options = { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' };
@@ -22,76 +19,354 @@ function getTodayString() {
     return formatter.format(new Date());
 }
 
-function generateMonthOptions() {
-    if (!monthFilter) return;
+// ==================================================================
+// SELECTOR DE RANGO DE FECHAS
+// ==================================================================
+const WEEKDAY_LABELS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+const MONTH_NAMES_ES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const MONTH_NAMES_SHORT_ES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const PRESETS = [
+    { key: 'today', label: 'Hoy' },
+    { key: 'yesterday', label: 'Ayer' },
+    { key: 'last7', label: 'Últimos 7 días' },
+    { key: 'last14', label: 'Últimos 14d' },
+    { key: 'last30', label: 'Últimos 30d' },
+    { key: 'thisMonth', label: 'Este mes' },
+    { key: 'lastMonth', label: 'Mes anterior' }
+];
 
+const dateRangeState = {
+    applied: { since: null, until: null, presetKey: 'today', label: 'Hoy' },
+    pending: { since: null, until: null, presetKey: null },
+    calendarBaseYear: null,
+    calendarBaseMonth: null
+};
+
+const dateTriggerEl = document.getElementById('date-range-trigger');
+const dateLabelEl = document.getElementById('date-range-label');
+const datePanelEl = document.getElementById('date-range-panel');
+const dateWidgetEl = document.getElementById('date-range-widget');
+
+function parseDateStr(s) {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d));
+}
+
+function formatDateStr(dateObj) {
+    const y = dateObj.getUTCFullYear();
+    const m = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(dateObj.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
+function addDaysStr(s, n) {
+    const d = parseDateStr(s);
+    d.setUTCDate(d.getUTCDate() + n);
+    return formatDateStr(d);
+}
+
+function formatShort(dateStr) {
+    const [, m, d] = dateStr.split('-').map(Number);
+    return `${String(d).padStart(2, '0')} ${MONTH_NAMES_SHORT_ES[m - 1]}`;
+}
+
+function isTodayRange(since, until) {
     const todayStr = getTodayString();
-    const nowParts = todayStr.split('-');
-    const currentYear = nowParts[0];
-    const currentMonthNum = parseInt(nowParts[1]); // 1-12
+    return since === todayStr && until === todayStr;
+}
 
-    const monthNames = [
-        "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-        "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
-    ];
-
-    monthFilter.innerHTML = '';
-
-    for (let i = 0; i < currentMonthNum; i++) {
-        const monthVal = (i + 1).toString().padStart(2, '0');
-        const value = `${currentYear}-${monthVal}`;
-        const text = `${monthNames[i]} ${currentYear}`;
-
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = text;
-
-        if ((i + 1) === currentMonthNum) {
-            option.selected = true;
+function computePresetRange(key, todayStr) {
+    switch (key) {
+        case 'today':
+            return { since: todayStr, until: todayStr };
+        case 'yesterday': {
+            const y = addDaysStr(todayStr, -1);
+            return { since: y, until: y };
         }
-
-        monthFilter.appendChild(option);
+        case 'last7':
+            return { since: addDaysStr(todayStr, -6), until: todayStr };
+        case 'last14':
+            return { since: addDaysStr(todayStr, -13), until: todayStr };
+        case 'last30':
+            return { since: addDaysStr(todayStr, -29), until: todayStr };
+        case 'thisMonth': {
+            const [y, m] = todayStr.split('-');
+            return { since: `${y}-${m}-01`, until: todayStr };
+        }
+        case 'lastMonth': {
+            const [y, m] = todayStr.split('-').map(Number);
+            const lastOfPrev = new Date(Date.UTC(y, m - 1, 0));
+            const firstOfPrev = new Date(Date.UTC(lastOfPrev.getUTCFullYear(), lastOfPrev.getUTCMonth(), 1));
+            return { since: formatDateStr(firstOfPrev), until: formatDateStr(lastOfPrev) };
+        }
+        default:
+            return { since: todayStr, until: todayStr };
     }
 }
 
-function checkCache() {
-    const cachedDate = localStorage.getItem(CACHE_DATE_KEY);
-    const today = getTodayString();
+function computeRangeLabel(p) {
+    if (p.presetKey) {
+        const found = PRESETS.find(pr => pr.key === p.presetKey);
+        if (found) return found.label;
+    }
+    if (!p.since || !p.until) return 'Seleccionar';
+    if (p.since === p.until) return formatShort(p.since);
+    return `${formatShort(p.since)} - ${formatShort(p.until)}`;
+}
 
-    if (cachedDate && cachedDate !== today) {
-        localStorage.removeItem(CACHE_KEY);
-        localStorage.removeItem(CACHE_DATE_KEY);
-        return null;
+function initDateRangeWidget() {
+    const todayStr = getTodayString();
+    dateRangeState.applied = { since: todayStr, until: todayStr, presetKey: 'today', label: 'Hoy' };
+    updateTriggerLabel();
+
+    if (dateTriggerEl) {
+        dateTriggerEl.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleDatePanel();
+        });
     }
 
-    const cached = localStorage.getItem(CACHE_KEY);
-    return cached ? JSON.parse(cached) : null;
+    document.addEventListener('click', (e) => {
+        // Usamos composedPath (capturada al momento del evento) en vez de
+        // dateWidgetEl.contains(e.target): los clics que re-renderizan el
+        // panel (innerHTML) desconectan e.target del DOM antes de que este
+        // listener corra, haciendo que contains() falle y cierre el panel.
+        if (dateWidgetEl && !e.composedPath().includes(dateWidgetEl)) {
+            closeDatePanel();
+        }
+    });
+}
+
+function updateTriggerLabel() {
+    if (dateLabelEl) dateLabelEl.textContent = dateRangeState.applied.label;
+}
+
+function toggleDatePanel() {
+    if (!datePanelEl) return;
+    if (datePanelEl.classList.contains('hidden')) openDatePanel();
+    else closeDatePanel();
+}
+
+function openDatePanel() {
+    dateRangeState.pending = {
+        since: dateRangeState.applied.since,
+        until: dateRangeState.applied.until,
+        presetKey: dateRangeState.applied.presetKey
+    };
+    const [y, m] = dateRangeState.applied.since.split('-').map(Number);
+    dateRangeState.calendarBaseYear = y;
+    dateRangeState.calendarBaseMonth = m - 1;
+    renderDatePanelContent();
+    datePanelEl.classList.remove('hidden');
+}
+
+function closeDatePanel() {
+    if (datePanelEl) datePanelEl.classList.add('hidden');
+}
+
+function buildMonthGrid(year, monthIndex0) {
+    const firstDow = new Date(Date.UTC(year, monthIndex0, 1)).getUTCDay();
+    const leadingBlanks = (firstDow + 6) % 7;
+    const daysInMonth = new Date(Date.UTC(year, monthIndex0 + 1, 0)).getUTCDate();
+    const cells = [];
+    for (let i = 0; i < leadingBlanks; i++) cells.push(null);
+    for (let day = 1; day <= daysInMonth; day++) {
+        const dateStr = `${year}-${String(monthIndex0 + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        cells.push({ day, dateStr });
+    }
+    return cells;
+}
+
+function renderMonthCalendar(year, monthIndex0) {
+    const cells = buildMonthGrid(year, monthIndex0);
+    const p = dateRangeState.pending;
+    const todayStr = getTodayString();
+    const title = `${MONTH_NAMES_ES[monthIndex0]} ${year}`;
+
+    let html = `<div class="flex-1 min-w-0">
+        <p class="text-center text-sm font-bold text-[#1E0B42] mb-3">${title}</p>
+        <div class="grid grid-cols-7 mb-2">
+            ${WEEKDAY_LABELS.map(w => `<span class="text-center text-[10px] font-bold text-slate-400">${w}</span>`).join('')}
+        </div>
+        <div class="grid grid-cols-7 gap-y-1">`;
+
+    cells.forEach(cell => {
+        if (!cell) {
+            html += `<span></span>`;
+            return;
+        }
+        const { day, dateStr } = cell;
+        const disabled = dateStr > todayStr;
+        const isToday = dateStr === todayStr;
+        const isStart = p.since === dateStr;
+        const isEnd = p.until === dateStr;
+        const inRange = p.since && p.until && dateStr > p.since && dateStr < p.until;
+
+        let cls = 'date-cell w-8 h-8 flex items-center justify-center rounded-full text-xs mx-auto transition-colors ';
+        if (disabled) {
+            cls += 'text-slate-300 cursor-not-allowed';
+        } else if (isStart || isEnd) {
+            cls += 'bg-violet-600 text-white font-bold cursor-pointer';
+        } else if (inRange) {
+            cls += 'bg-violet-100 text-violet-700 font-semibold cursor-pointer';
+        } else if (isToday) {
+            cls += 'text-violet-600 font-bold ring-1 ring-violet-300 cursor-pointer hover:bg-violet-50';
+        } else {
+            cls += 'text-slate-600 font-medium cursor-pointer hover:bg-violet-50';
+        }
+
+        html += `<button type="button" data-date="${dateStr}" ${disabled ? 'disabled' : ''} class="${cls}">${day}</button>`;
+    });
+
+    html += `</div></div>`;
+    return html;
+}
+
+function renderDatePanelContent() {
+    if (!datePanelEl) return;
+    const p = dateRangeState.pending;
+    const y1 = dateRangeState.calendarBaseYear;
+    const m1 = dateRangeState.calendarBaseMonth;
+    let y2 = y1, m2 = m1 + 1;
+    if (m2 > 11) { m2 = 0; y2 = y1 + 1; }
+
+    const canUpdate = !!(p.since && p.until);
+    let hint = 'Haz clic para seleccionar inicio';
+    if (p.since && !p.until) hint = 'Haz clic para seleccionar fin';
+    else if (p.since && p.until) hint = `${formatShort(p.since)} — ${formatShort(p.until)}`;
+
+    datePanelEl.innerHTML = `
+        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Seleccionar período</p>
+        <div class="grid grid-cols-4 gap-2 mb-5">
+            ${PRESETS.map(pr => `
+                <button type="button" data-preset="${pr.key}" class="preset-btn px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${p.presetKey === pr.key ? 'bg-violet-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">${pr.label}</button>
+            `).join('')}
+        </div>
+        <div class="border-t border-slate-100 pt-5">
+            <div class="flex items-start gap-2">
+                <button type="button" id="cal-prev" class="w-7 h-7 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-500 mt-6 shrink-0">
+                    <i data-lucide="chevron-left" class="w-4 h-4"></i>
+                </button>
+                <div class="flex-1 flex gap-6 min-w-0">
+                    ${renderMonthCalendar(y1, m1)}
+                    ${renderMonthCalendar(y2, m2)}
+                </div>
+                <button type="button" id="cal-next" class="w-7 h-7 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-500 mt-6 shrink-0">
+                    <i data-lucide="chevron-right" class="w-4 h-4"></i>
+                </button>
+            </div>
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-3 mt-6 pt-4 border-t border-slate-100">
+            <p class="text-xs text-violet-500 font-medium">${hint}</p>
+            <div class="flex items-center gap-2">
+                <button type="button" id="date-quitar" class="px-4 py-2 rounded-xl text-xs font-bold text-slate-500 hover:bg-slate-100">Quitar</button>
+                <button type="button" id="date-cancelar" class="px-4 py-2 rounded-xl text-xs font-bold text-slate-500 hover:bg-slate-100">Cancelar</button>
+                <button type="button" id="date-actualizar" ${canUpdate ? '' : 'disabled'} class="px-5 py-2 rounded-xl text-xs font-bold text-white transition-colors ${canUpdate ? 'bg-violet-600 hover:bg-violet-700' : 'bg-slate-200 cursor-not-allowed'}">Actualizar</button>
+            </div>
+        </div>
+    `;
+    lucide.createIcons();
+    attachDatePanelEvents();
+}
+
+function attachDatePanelEvents() {
+    datePanelEl.querySelectorAll('.preset-btn').forEach(btn => {
+        btn.addEventListener('click', () => onPresetClick(btn.dataset.preset));
+    });
+    datePanelEl.querySelectorAll('.date-cell:not([disabled])').forEach(btn => {
+        btn.addEventListener('click', () => onDayClick(btn.dataset.date));
+    });
+    const prevBtn = datePanelEl.querySelector('#cal-prev');
+    const nextBtn = datePanelEl.querySelector('#cal-next');
+    if (prevBtn) prevBtn.addEventListener('click', () => shiftCalendar(-1));
+    if (nextBtn) nextBtn.addEventListener('click', () => shiftCalendar(1));
+
+    const quitarBtn = datePanelEl.querySelector('#date-quitar');
+    if (quitarBtn) quitarBtn.addEventListener('click', onQuitar);
+    const cancelarBtn = datePanelEl.querySelector('#date-cancelar');
+    if (cancelarBtn) cancelarBtn.addEventListener('click', closeDatePanel);
+    const actualizarBtn = datePanelEl.querySelector('#date-actualizar');
+    if (actualizarBtn) actualizarBtn.addEventListener('click', onActualizar);
+}
+
+function onPresetClick(key) {
+    const todayStr = getTodayString();
+    const range = computePresetRange(key, todayStr);
+    dateRangeState.pending.since = range.since;
+    dateRangeState.pending.until = range.until;
+    dateRangeState.pending.presetKey = key;
+
+    const d = parseDateStr(range.since);
+    dateRangeState.calendarBaseYear = d.getUTCFullYear();
+    dateRangeState.calendarBaseMonth = d.getUTCMonth();
+    renderDatePanelContent();
+}
+
+function onDayClick(dateStr) {
+    const p = dateRangeState.pending;
+    if (!p.since || (p.since && p.until)) {
+        p.since = dateStr;
+        p.until = null;
+        p.presetKey = null;
+    } else if (dateStr < p.since) {
+        p.until = p.since;
+        p.since = dateStr;
+        p.presetKey = null;
+    } else {
+        p.until = dateStr;
+        p.presetKey = null;
+    }
+    renderDatePanelContent();
+}
+
+function shiftCalendar(delta) {
+    let m = dateRangeState.calendarBaseMonth + delta;
+    let y = dateRangeState.calendarBaseYear;
+    if (m < 0) { m = 11; y -= 1; }
+    if (m > 11) { m = 0; y += 1; }
+    dateRangeState.calendarBaseMonth = m;
+    dateRangeState.calendarBaseYear = y;
+    renderDatePanelContent();
+}
+
+function onQuitar() {
+    dateRangeState.pending.since = null;
+    dateRangeState.pending.until = null;
+    dateRangeState.pending.presetKey = null;
+    renderDatePanelContent();
+}
+
+function onActualizar() {
+    const p = dateRangeState.pending;
+    if (!p.since || !p.until) return;
+    dateRangeState.applied = {
+        since: p.since,
+        until: p.until,
+        presetKey: p.presetKey,
+        label: computeRangeLabel(p)
+    };
+    closeDatePanel();
+    updateTriggerLabel();
+    fetchData(dateRangeState.applied.since, dateRangeState.applied.until);
 }
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-    generateMonthOptions();
-    fetchData();
+    initDateRangeWidget();
+    fetchData(dateRangeState.applied.since, dateRangeState.applied.until);
     setupEventListeners();
 });
 
 // --- ENGINE DE DATOS ---
-async function fetchData(month = '') {
-    const todayStr = getTodayString();
-    const currentMonth = todayStr.substring(0, 7);
-    const isCurrentMonth = !month || month === currentMonth;
-    const targetMonth = month || currentMonth;
-
-    // Se ha desactivado el caché local por solicitud para garantizar data en tiempo real 100%
-
-    await syncWithServer(targetMonth, isCurrentMonth);
+async function fetchData(since, until) {
+    await syncWithServer(since, until);
 }
 
-async function syncWithServer(month, isCurrentMonth) {
+async function syncWithServer(since, until) {
     try {
         if (!apiData) contentArea.innerHTML = '<div class="flex items-center justify-center min-h-[50vh]"><div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-violet-500"></div></div>';
 
-        const url = month ? `/api/data?month=${month}` : '/api/data';
+        const url = `/api/data?since=${since}&until=${until}`;
         const response = await fetch(url);
         const result = await response.json();
 
@@ -101,13 +376,9 @@ async function syncWithServer(month, isCurrentMonth) {
         }
 
         apiData = result;
-
-        apiData = result;
-        // Caché desactivado: localStorage.setItem(CACHE_KEY, JSON.stringify(apiData));
-
         renderCurrentSection();
 
-        if (isCurrentMonth) {
+        if (isTodayRange(since, until)) {
             fetchTodayDelta();
         }
     } catch (err) {
@@ -121,9 +392,9 @@ async function fetchTodayDelta() {
         const response = await fetch('/api/today');
         const result = await response.json();
 
-        if (result.status === 'success' && currentSection === 'dashboard') {
-            const today = result.data;
-            updateHoyUIMetrics(today);
+        if (result.status === 'success') {
+            if (currentSection === 'dashboard') updateHoyUIMetrics(result.data);
+            if (currentSection === 'leads') updateHoyLeadsUIMetrics(result.leadsData);
         }
     } catch (err) {
         console.warn("Delta Update silenciado:", err);
@@ -131,16 +402,24 @@ async function fetchTodayDelta() {
 }
 
 function updateHoyUIMetrics(today) {
-    const todayStr = getTodayString();
-    const currentMonth = todayStr.substring(0, 7);
-    const selectedMonth = monthFilter ? monthFilter.value : currentMonth;
-    if (selectedMonth < currentMonth) return;
+    if (!isTodayRange(dateRangeState.applied.since, dateRangeState.applied.until)) return;
+
+    const cards = document.querySelectorAll('p.text-3xl');
+    if (cards.length >= 3) {
+        cards[0].innerText = `S/. ${today.spend.toFixed(2)}`;
+        cards[1].innerText = today.mensajes;
+        cards[2].innerText = `S/. ${today.costoMsg.toFixed(2)}`;
+    }
+}
+
+function updateHoyLeadsUIMetrics(today) {
+    if (!isTodayRange(dateRangeState.applied.since, dateRangeState.applied.until)) return;
 
     const cards = document.querySelectorAll('p.text-3xl');
     if (cards.length >= 3) {
         cards[0].innerText = `S/. ${today.spend.toFixed(2)}`;
         cards[1].innerText = today.leads;
-        cards[2].innerText = `S/. ${today.cpl.toFixed(2)}`;
+        cards[2].innerText = `S/. ${today.costoLead.toFixed(2)}`;
     }
 }
 
@@ -169,12 +448,6 @@ function setupEventListeners() {
 
     mobileMenuToggle.addEventListener('click', () => toggleSidebar(true));
     sidebarOverlay.addEventListener('click', () => toggleSidebar(false));
-
-    if (monthFilter) {
-        monthFilter.addEventListener('change', (e) => {
-            fetchData(e.target.value);
-        });
-    }
 }
 
 function toggleSidebar(show) {
@@ -203,7 +476,7 @@ function switchSection(section) {
     const titles = {
         'dashboard': 'Dashboard de Resultados',
         'metrics': 'Métricas Diarias',
-        'leads': 'Registro de Leads'
+        'leads': 'Campañas de Leads'
     };
     pageTitle.textContent = titles[section] || 'Dashboard';
 
@@ -219,7 +492,7 @@ function renderCurrentSection() {
         } else if (currentSection === 'metrics') {
             renderMetricsTable();
         } else if (currentSection === 'leads') {
-            renderLeadsPlaceholder();
+            renderLeadsSection();
         }
     } catch (err) {
         console.error("Render Error:", err);
@@ -240,42 +513,25 @@ function renderCurrentSection() {
 function renderDashboard() {
     // Definir valores por defecto extremadamente seguros
     const kpi = apiData.kpis || {};
-    const metrics = apiData.dailyMetrics || [];
-    const today = metrics[0] || { spend: 0, leads: 0, cpl: 0 };
-    
-    const todayStr = getTodayString();
-    const currentMonth = todayStr.substring(0, 7);
-    const selectedMonth = monthFilter ? monthFilter.value : currentMonth;
-    const isHistorical = selectedMonth < currentMonth;
 
     const totalSpend = kpi.presupuestoConsumido || 0;
-    const totalLeads = kpi.leadsTotales || 0;
-    const monthDays = apiData.monthDays || 30;
-
-    const avgSpend = (totalSpend / monthDays).toFixed(2);
-    const avgLeads = (totalLeads / monthDays).toFixed(2);
-    
-    // Formateo seguro de CPL
-    let avgCplRaw = kpi.costoPorLeadPromedio || "S/. 0.00";
-    let avgCpl = typeof avgCplRaw === 'string' ? avgCplRaw.replace('S/. ', '') : "0.00";
-
-    // Métricas del embudo
+    const totalMensajes = kpi.mensajesTotales || 0;
     const reach = kpi.reachTotal || 0;
     const clicks = kpi.clicksTotal || 0;
     const visits = kpi.visitsTotal || 0;
     const ctr = reach > 0 ? ((clicks / reach) * 100).toFixed(2) : '0.00';
-    const conv = clicks > 0 ? ((totalLeads / clicks) * 100).toFixed(2) : '0.00';
-    const todayCpl = today.leads > 0 ? (today.spend / today.leads).toFixed(2) : "0.00";
-    
-    console.log("--- VALIDACIÓN CPL HOY ---");
-    console.log("Gasto de hoy:", today.spend);
-    console.log("Leads de hoy:", today.leads);
-    console.log("CPL Hoy calculado:", todayCpl);
-    console.log("--------------------------");
+    const conv = clicks > 0 ? ((totalMensajes / clicks) * 100).toFixed(2) : '0.00';
+
+    let costoMsgRaw = kpi.costoPorMsgPromedio || "S/. 0.00";
+    let costoMsg = typeof costoMsgRaw === 'string' ? costoMsgRaw.replace('S/. ', '') : "0.00";
+
+    const isToday = isTodayRange(dateRangeState.applied.since, dateRangeState.applied.until);
+    const periodBadge = (dateRangeState.applied.label || 'Período').toUpperCase();
+    const suffix = isToday ? 'Hoy' : 'del Período';
 
     contentArea.innerHTML = `
         <div class="space-y-12 animate-fade-in pb-20">
-            
+
             <!-- TOP METRICS SECTION -->
             <section id="top-metrics-section">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -283,46 +539,46 @@ function renderDashboard() {
                         <div class="absolute top-0 right-0 w-24 h-24 bg-violet-500/5 rounded-bl-full -mr-10 -mt-10 group-hover:scale-110 transition-transform"></div>
                         <div class="flex items-center justify-between mb-4">
                             <div class="w-12 h-12 bg-violet-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-violet-200"><i data-lucide="zap" class="w-6 h-6"></i></div>
-                            <span class="px-2 py-1 bg-violet-50 text-violet-600 text-[10px] font-bold rounded-lg uppercase tracking-wider">Actual</span>
+                            <span class="px-2 py-1 bg-violet-50 text-violet-600 text-[10px] font-bold rounded-lg uppercase tracking-wider">${periodBadge}</span>
                         </div>
-                        <p class="text-slate-500 text-sm font-medium mb-1">${!isHistorical ? 'Gasto Hoy' : 'Gasto Diario'}</p>
-                        <h4 class="text-3xl font-black text-[#1E0B42] tracking-tighter">S/. ${!isHistorical ? (today.spend || 0).toFixed(2) : avgSpend}</h4>
+                        <p class="text-slate-500 text-sm font-medium mb-1">Gasto ${suffix}</p>
+                        <h4 class="text-3xl font-black text-[#1E0B42] tracking-tighter">S/. ${totalSpend.toFixed(2)}</h4>
                     </div>
                     <div class="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm card-hover group relative overflow-hidden">
                         <div class="absolute top-0 right-0 w-24 h-24 bg-orange-500/5 rounded-bl-full -mr-10 -mt-10 group-hover:scale-110 transition-transform"></div>
                         <div class="flex items-center justify-between mb-4">
-                            <div class="w-12 h-12 bg-orange-500 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-orange-100"><i data-lucide="users" class="w-6 h-6"></i></div>
-                            <span class="px-2 py-1 bg-orange-50 text-orange-600 text-[10px] font-bold rounded-lg uppercase tracking-wider">Live</span>
+                            <div class="w-12 h-12 bg-orange-500 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-orange-100"><i data-lucide="message-circle" class="w-6 h-6"></i></div>
+                            <span class="px-2 py-1 bg-orange-50 text-orange-600 text-[10px] font-bold rounded-lg uppercase tracking-wider">${periodBadge}</span>
                         </div>
-                        <p class="text-slate-500 text-sm font-medium mb-1">${!isHistorical ? 'Leads Captados' : 'Leads/Día'}</p>
-                        <h4 class="text-3xl font-black text-[#1E0B42] tracking-tighter">${!isHistorical ? (today.leads || 0) : avgLeads}</h4>
+                        <p class="text-slate-500 text-sm font-medium mb-1">Mensajes ${suffix}</p>
+                        <h4 class="text-3xl font-black text-[#1E0B42] tracking-tighter">${totalMensajes}</h4>
                     </div>
                     <div class="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm card-hover group relative overflow-hidden">
                         <div class="absolute top-0 right-0 w-24 h-24 bg-rose-500/5 rounded-bl-full -mr-10 -mt-10 group-hover:scale-110 transition-transform"></div>
                         <div class="flex items-center justify-between mb-4">
                             <div class="w-12 h-12 bg-rose-500 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-rose-100"><i data-lucide="target" class="w-6 h-6"></i></div>
-                            <span class="px-2 py-1 bg-rose-50 text-rose-600 text-[10px] font-bold rounded-lg uppercase tracking-wider">Target</span>
+                            <span class="px-2 py-1 bg-rose-50 text-rose-600 text-[10px] font-bold rounded-lg uppercase tracking-wider">${periodBadge}</span>
                         </div>
-                        <p class="text-slate-500 text-sm font-medium mb-1">CPL Hoy</p>
-                        <h4 class="text-3xl font-black text-[#1E0B42] tracking-tighter">S/. ${!isHistorical ? todayCpl : avgCpl}</h4>
+                        <p class="text-slate-500 text-sm font-medium mb-1">Costo/Msg ${suffix}</p>
+                        <h4 class="text-3xl font-black text-[#1E0B42] tracking-tighter">S/. ${costoMsg}</h4>
                     </div>
                 </div>
             </section>
 
             <!-- BLOQUE DE GRÁFICOS -->
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                
+
                 <!-- 1. CRECIMIENTO ACUMULADO -->
                 <div class="lg:col-span-8 bg-[#1E0B42] p-6 lg:p-8 rounded-[2.5rem] lg:rounded-[3.5rem] dark-card relative overflow-hidden flex flex-col min-h-[400px] lg:min-h-[420px] card-hover group">
                     <div class="absolute bottom-0 left-0 w-full h-1/2 bg-gradient-to-t from-orange-600/5 to-transparent"></div>
                     <div class="flex items-center justify-between mb-12 relative">
                         <div>
-                            <h3 class="font-bold text-2xl text-white tracking-tight">Crecimiento de Leads</h3>
+                            <h3 class="font-bold text-2xl text-white tracking-tight">Crecimiento de Mensajes</h3>
                             <p class="text-orange-300/60 text-sm font-medium uppercase tracking-widest">Progreso diario de captación</p>
                         </div>
                         <div class="text-right">
                             <p class="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">Acumulado</p>
-                            <p class="text-3xl font-black text-orange-400 tracking-tighter">${totalLeads}</p>
+                            <p class="text-3xl font-black text-orange-400 tracking-tighter">${totalMensajes}</p>
                         </div>
                     </div>
                     <div class="relative flex-1 min-h-0">
@@ -330,11 +586,11 @@ function renderDashboard() {
                     </div>
                 </div>
 
-                <!-- 2. CONTROL DE PRESUPUESTO -->
+                <!-- 2. INVERSIÓN DEL PERÍODO -->
                 <div class="lg:col-span-4 bg-white p-6 lg:p-8 rounded-[2.5rem] lg:rounded-[3.5rem] floating-card border border-slate-100 relative overflow-hidden flex flex-col min-h-[400px] lg:min-h-[420px] card-hover">
                     <div class="relative mb-10 text-center">
-                        <h3 class="font-bold text-xl text-[#1E0B42]">Control de Presupuesto</h3>
-                        <p class="text-xs text-slate-400 font-bold uppercase tracking-widest mt-2">Mensual: S/. 12,000</p>
+                        <h3 class="font-bold text-xl text-[#1E0B42]">Inversión del Período</h3>
+                        <p class="text-xs text-slate-400 font-bold uppercase tracking-widest mt-2">${periodBadge}</p>
                     </div>
                     <div class="relative flex-1 flex flex-col items-center justify-center">
                         <div class="w-full h-64 relative">
@@ -342,22 +598,22 @@ function renderDashboard() {
                         </div>
                         <div class="mt-8 grid grid-cols-2 gap-4 w-full">
                             <div class="p-4 bg-slate-50 rounded-3xl border border-slate-100 text-center">
-                                <p class="text-[10px] font-bold text-slate-400 uppercase mb-1">Consumido</p>
+                                <p class="text-[10px] font-bold text-slate-400 uppercase mb-1">Gasto</p>
                                 <p class="text-sm font-black text-[#1E0B42]">${kpi.gastoTotal || 'S/. 0.00'}</p>
                             </div>
                             <div class="p-4 bg-violet-50 rounded-3xl border border-violet-100 text-center">
-                                <p class="text-[10px] font-bold text-violet-400 uppercase mb-1">Queda</p>
-                                <p class="text-sm font-black text-violet-600">S/. ${(kpi.presupuestoRestante || 0).toFixed(2)}</p>
+                                <p class="text-[10px] font-bold text-violet-400 uppercase mb-1">Costo/Msg Prom.</p>
+                                <p class="text-sm font-black text-violet-600">S/. ${costoMsg}</p>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- 3. LEADS DIARIOS -->
+                <!-- 3. MENSAJES DIARIOS -->
                 <div class="lg:col-span-6 bg-white p-6 lg:p-8 rounded-[2.5rem] lg:rounded-[3.5rem] floating-card border border-slate-100 relative overflow-hidden flex flex-col min-h-[400px] lg:min-h-[420px] card-hover">
                     <div class="flex items-center justify-between mb-12">
                         <div>
-                            <h3 class="font-bold text-2xl text-[#1E0B42] tracking-tight">Leads Diarios</h3>
+                            <h3 class="font-bold text-2xl text-[#1E0B42] tracking-tight">Mensajes Diarios</h3>
                             <p class="text-sm text-slate-400 font-medium">Registro de captación por día</p>
                         </div>
                         <div class="w-14 h-14 bg-violet-50 rounded-3xl flex items-center justify-center"><i data-lucide="bar-chart-3" class="text-violet-600 w-7 h-7"></i></div>
@@ -367,20 +623,20 @@ function renderDashboard() {
                     </div>
                 </div>
 
-                <!-- 4. TENDENCIA CPL -->
+                <!-- 4. TENDENCIA COSTO/MSG -->
                 <div class="lg:col-span-6 bg-[#1E0B42] p-6 lg:p-8 rounded-[2.5rem] lg:rounded-[3.5rem] dark-card relative overflow-hidden flex flex-col min-h-[400px] lg:min-h-[420px] group card-hover">
                     <div class="absolute top-0 right-0 w-96 h-96 bg-violet-600/10 rounded-full -mr-48 -mt-48 blur-[100px] group-hover:bg-violet-600/20 transition-all duration-700"></div>
                     <div class="relative flex items-center justify-between mb-12">
                         <div>
                             <div class="flex items-center gap-3 mb-2">
                                 <span class="w-3 h-3 bg-orange-400 rounded-full shadow-[0_0_15px_#FB923C] animate-pulse"></span>
-                                <h3 class="font-bold text-2xl text-white tracking-tight">Tendencia CPL</h3>
+                                <h3 class="font-bold text-2xl text-white tracking-tight">Tendencia Costo/Msg</h3>
                             </div>
                             <p class="text-slate-500 text-sm font-medium">Fluctuación diaria</p>
                         </div>
                         <div class="text-right">
                             <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Promedio</p>
-                            <p class="text-2xl font-black text-orange-400 tracking-tighter">${avgCplRaw}</p>
+                            <p class="text-2xl font-black text-orange-400 tracking-tighter">${costoMsgRaw}</p>
                         </div>
                     </div>
                     <div class="relative flex-1 min-h-0">
@@ -395,9 +651,9 @@ function renderDashboard() {
                     </div>
                     <div class="mb-12">
                         <h3 class="font-bold text-3xl text-[#1E0B42] tracking-tight">Embudo de Conversión</h3>
-                        <p class="text-slate-400 font-medium">Análisis de eficiencia del funnel publicitario</p>
+                        <p class="text-slate-400 font-medium">Análisis de eficiencia del funnel publicitario · ${dateRangeState.applied.label}</p>
                     </div>
-                    
+
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-12 items-center">
                         <div class="md:col-span-2">
                             <div class="funnel-container">
@@ -422,16 +678,16 @@ function renderDashboard() {
                                 <!-- Stage 3: Visitas -->
                                 <div class="funnel-stage stage-visits group/s3">
                                     <p class="funnel-label text-orange-700">Visitas a la página</p>
-                                    <p class="funnel-value text-[#1E0B42]">${(apiData.kpis.visitsTotal || 0).toLocaleString()}</p>
+                                    <p class="funnel-value text-[#1E0B42]">${visits.toLocaleString()}</p>
                                     <div class="conversion-tag text-white bg-[#FB923C] border-none shadow-orange-200">
-                                        ${((totalLeads / (apiData.kpis.visitsTotal || 1)) * 100).toFixed(1)}% CONV.
+                                        ${conv}% CONV.
                                     </div>
                                 </div>
 
-                                <!-- Stage 4: Leads -->
+                                <!-- Stage 4: Mensajes -->
                                 <div class="funnel-stage stage-leads group/s4">
-                                    <p class="funnel-label text-orange-100">Leads Finales</p>
-                                    <p class="funnel-value text-white">${totalLeads.toLocaleString()}</p>
+                                    <p class="funnel-label text-orange-100">Mensajes Finales</p>
+                                    <p class="funnel-value text-white">${totalMensajes.toLocaleString()}</p>
                                 </div>
                             </div>
                         </div>
@@ -447,17 +703,17 @@ function renderDashboard() {
                                 </div>
                                 <p class="text-[10px] text-slate-400 mt-2 font-medium">Inversión por cada clic generado</p>
                             </div>
-                            
-                            <!-- COSTO POR LEAD -->
+
+                            <!-- COSTO POR MENSAJE -->
                             <div class="p-8 bg-[#1E0B42] rounded-[2.5rem] relative overflow-hidden group">
-                                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform"><i data-lucide="user-check" class="w-12 h-12 text-white"></i></div>
+                                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform"><i data-lucide="message-square" class="w-12 h-12 text-white"></i></div>
                                 <div class="absolute top-0 right-0 w-32 h-32 bg-orange-500/10 rounded-full blur-2xl"></div>
-                                <p class="text-xs font-bold text-violet-300/50 uppercase tracking-widest mb-4">Costo por Lead Promedio</p>
+                                <p class="text-xs font-bold text-violet-300/50 uppercase tracking-widest mb-4">Costo/Msg del Período</p>
                                 <div class="flex items-baseline gap-1">
                                     <p class="text-sm font-bold text-violet-300/30">S/.</p>
-                                    <p class="text-4xl font-black text-white">${(totalSpend / (totalLeads || 1)).toFixed(2)}</p>
+                                    <p class="text-4xl font-black text-white">${costoMsg}</p>
                                 </div>
-                                <p class="text-[10px] text-violet-300/40 mt-2 font-medium">Eficiencia de captación mensual</p>
+                                <p class="text-[10px] text-violet-300/40 mt-2 font-medium">Eficiencia de captación del período</p>
                             </div>
                         </div>
                     </div>
@@ -475,14 +731,14 @@ function initCharts() {
     Chart.defaults.font.family = 'Outfit';
     Chart.defaults.color = '#94A3B8';
 
-    // --- NEW: GROWTH CHART (LEADS ACUMULADOS) ---
+    // --- GROWTH CHART (MENSAJES ACUMULADOS) ---
     const ctxGrowth = document.getElementById('growthChart');
     if (ctxGrowth) {
         if (charts.growth) charts.growth.destroy();
 
-        // Calcular leads acumulados
+        // Calcular mensajes acumulados
         let cumulative = 0;
-        const cumulativeData = apiData.charts.mixed.leads.map(val => {
+        const cumulativeData = apiData.charts.mixed.mensajes.map(val => {
             cumulative += val;
             return cumulative;
         });
@@ -496,7 +752,7 @@ function initCharts() {
             data: {
                 labels: apiData.charts.mixed.labels,
                 datasets: [{
-                    label: 'Leads Acumulados',
+                    label: 'Mensajes Acumulados',
                     data: cumulativeData,
                     borderColor: '#FB923C',
                     backgroundColor: grad,
@@ -525,7 +781,7 @@ function initCharts() {
                 },
                 scales: {
                     x: { grid: { display: false }, border: { display: false }, ticks: { color: '#64748B' } },
-                    y: { 
+                    y: {
                         grid: { color: 'rgba(255, 255, 255, 0.05)', drawBorder: false },
                         border: { display: false },
                         beginAtZero: true,
@@ -535,12 +791,12 @@ function initCharts() {
             }
         });
     }
-    
-    // --- CHART 1: TENDENCIA CPL (DARK NEON LINE) ---
+
+    // --- CHART 1: TENDENCIA COSTO/MSG (DARK NEON LINE) ---
     const ctxLine = document.getElementById('lineChart');
     if (ctxLine) {
         if (charts.line) charts.line.destroy();
-        
+
         const grad = ctxLine.getContext('2d').createLinearGradient(0, 0, 0, 300);
         grad.addColorStop(0, 'rgba(251, 146, 60, 0.2)');
         grad.addColorStop(1, 'rgba(251, 146, 60, 0)');
@@ -550,7 +806,7 @@ function initCharts() {
             data: {
                 labels: apiData.charts.line.labels,
                 datasets: [{
-                    label: 'CPL S/',
+                    label: 'Costo/Msg S/',
                     data: apiData.charts.line.data,
                     borderColor: '#FB923C',
                     backgroundColor: grad,
@@ -588,36 +844,14 @@ function initCharts() {
                         displayColors: false,
                         callbacks: {
                             label: function(context) {
-                                return 'CPL: S/ ' + context.parsed.y.toFixed(2);
-                            }
-                        }
-                    },
-                    annotation: {
-                        annotations: {
-                            line1: {
-                                type: 'line',
-                                yMin: 5.5,
-                                yMax: 5.5,
-                                borderColor: 'rgba(251, 146, 60, 0.3)',
-                                borderWidth: 2,
-                                borderDash: [6, 6],
-                                label: {
-                                    display: true,
-                                    content: 'CPL Óptimo: S/ 5.50',
-                                    position: 'end',
-                                    backgroundColor: 'rgba(251, 146, 60, 0.8)',
-                                    color: '#fff',
-                                    font: { size: 10, weight: 'bold', family: 'Outfit' },
-                                    padding: 6,
-                                    borderRadius: 6
-                                }
+                                return 'Costo/Msg: S/ ' + context.parsed.y.toFixed(2);
                             }
                         }
                     }
                 },
                 scales: {
                     x: { grid: { display: false }, border: { display: false }, ticks: { color: '#475569' } },
-                    y: { 
+                    y: {
                         grid: { color: 'rgba(255, 255, 255, 0.03)', drawBorder: false },
                         border: { display: false },
                         ticks: { color: '#475569', callback: v => 'S/.' + v }
@@ -627,11 +861,11 @@ function initCharts() {
         });
     }
 
-    // --- CHART 2: LEADS DIARIOS (MODERN PILLAR BARS) ---
+    // --- CHART 2: MENSAJES DIARIOS (MODERN PILLAR BARS) ---
     const ctxBar = document.getElementById('barChart');
     if (ctxBar) {
         if (charts.bar) charts.bar.destroy();
-        
+
         const grad = ctxBar.getContext('2d').createLinearGradient(0, 0, 0, 300);
         grad.addColorStop(0, '#8B5CF6');
         grad.addColorStop(1, '#C4B5FD');
@@ -641,8 +875,8 @@ function initCharts() {
             data: {
                 labels: apiData.charts.mixed.labels,
                 datasets: [{
-                    label: 'Leads',
-                    data: apiData.charts.mixed.leads,
+                    label: 'Mensajes',
+                    data: apiData.charts.mixed.mensajes,
                     backgroundColor: grad,
                     borderRadius: 30,
                     borderSkipped: false,
@@ -668,7 +902,7 @@ function initCharts() {
                 },
                 scales: {
                     x: { grid: { display: false }, border: { display: false } },
-                    y: { 
+                    y: {
                         grid: { color: 'rgba(226, 232, 240, 0.4)', drawBorder: false },
                         border: { display: false }
                     }
@@ -677,13 +911,10 @@ function initCharts() {
         });
     }
 
-    // (Mixed chart removed as per client request)
-
-    // --- CHART 4: CONTROL DE PRESUPUESTO (MODERN DOUGHNUT) ---
+    // --- CHART 3: INVERSIÓN DEL PERÍODO (MODERN DOUGHNUT) ---
     const ctxDoughnut = document.getElementById('doughnutChart');
     if (ctxDoughnut) {
         if (charts.doughnut) charts.doughnut.destroy();
-        const remaining = apiData.kpis.presupuestoRestante;
         charts.doughnut = new Chart(ctxDoughnut, {
             type: 'doughnut',
             data: {
@@ -710,11 +941,11 @@ function initCharts() {
                     ctx.textBaseline = 'middle';
                     ctx.font = 'bold 36px Outfit';
                     ctx.fillStyle = '#1E0B42';
-                    const pct = ((apiData.kpis.presupuestoConsumido / 12000) * 100).toFixed(0);
-                    ctx.fillText(`${pct}%`, width / 2, height / 2 - 5);
+                    const consumido = apiData.kpis.presupuestoConsumido || 0;
+                    ctx.fillText(`S/. ${consumido.toFixed(0)}`, width / 2, height / 2 - 5);
                     ctx.font = '700 11px Outfit';
                     ctx.fillStyle = '#94A3B8';
-                    ctx.fillText('CONSUMIDO', width / 2, height / 2 + 25);
+                    ctx.fillText('GASTADO', width / 2, height / 2 + 25);
                     ctx.restore();
                 }
             }]
@@ -728,8 +959,8 @@ function renderMetricsTable() {
         <tr class="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
             <td class="py-4 px-6 font-medium text-slate-800">${item.date}</td>
             <td class="py-4 px-6 text-slate-600">S/. ${item.spend.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
-            <td class="py-4 px-6 text-slate-600">${item.leads}</td>
-            <td class="py-4 px-6 font-semibold text-violet-600">S/. ${item.cpl.toFixed(2)}</td>
+            <td class="py-4 px-6 text-slate-600">${item.mensajes}</td>
+            <td class="py-4 px-6 font-semibold text-violet-600">S/. ${item.costoMsg.toFixed(2)}</td>
             <td class="py-4 px-6">
                 <span class="px-3 py-1 bg-violet-50 text-violet-700 rounded-full text-xs font-bold">${item.ctr}%</span>
             </td>
@@ -744,8 +975,8 @@ function renderMetricsTable() {
                         <tr class="bg-slate-50 text-slate-500 uppercase text-xs font-bold tracking-wider">
                             <th class="py-4 px-6">Fecha</th>
                             <th class="py-4 px-6">Gasto</th>
-                            <th class="py-4 px-6">Leads</th>
-                            <th class="py-4 px-6">Costo/Lead</th>
+                            <th class="py-4 px-6">Mensajes</th>
+                            <th class="py-4 px-6">Costo/Msg</th>
                             <th class="py-4 px-6">CTR</th>
                         </tr>
                     </thead>
@@ -756,13 +987,373 @@ function renderMetricsTable() {
     `;
 }
 
-function renderLeadsPlaceholder() {
+function renderLeadsSection() {
+    // Métricas de campañas Meta con objetivo "Clientes potenciales" (OUTCOME_LEADS).
+    // Gasto y costo se calculan SOLO con estas campañas, nunca combinado con Mensajes.
+    const kpi = apiData.leadsKpis || {};
+
+    const totalSpend = kpi.gastoNumerico || 0;
+    const totalLeads = kpi.leadsTotales || 0;
+    const reach = kpi.reachTotal || 0;
+    const clicks = kpi.clicksTotal || 0;
+    const visits = kpi.visitsTotal || 0;
+    const ctr = reach > 0 ? ((clicks / reach) * 100).toFixed(2) : '0.00';
+    const conv = clicks > 0 ? ((totalLeads / clicks) * 100).toFixed(2) : '0.00';
+
+    let costoLeadRaw = kpi.costoPorLeadPromedio || "S/. 0.00";
+    let costoLead = typeof costoLeadRaw === 'string' ? costoLeadRaw.replace('S/. ', '') : "0.00";
+
+    const isToday = isTodayRange(dateRangeState.applied.since, dateRangeState.applied.until);
+    const periodBadge = (dateRangeState.applied.label || 'Período').toUpperCase();
+    const suffix = isToday ? 'Hoy' : 'del Período';
+
     contentArea.innerHTML = `
-        <div class="animate-fade-in flex flex-col items-center justify-center min-h-[50vh] bg-white rounded-3xl border border-slate-200">
-            <div class="w-16 h-16 bg-violet-50 rounded-full flex items-center justify-center mb-6"><i data-lucide="clock" class="text-violet-600 w-8 h-8"></i></div>
-            <h2 class="text-2xl font-bold text-slate-800 mb-2">Registro de Leads</h2>
-            <p class="text-slate-500 text-center">Data del CRM próximamente disponible.</p>
+        <div class="space-y-12 animate-fade-in pb-20">
+
+            <!-- TOP METRICS SECTION -->
+            <section id="top-metrics-leads-section">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm card-hover group relative overflow-hidden">
+                        <div class="absolute top-0 right-0 w-24 h-24 bg-violet-500/5 rounded-bl-full -mr-10 -mt-10 group-hover:scale-110 transition-transform"></div>
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="w-12 h-12 bg-violet-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-violet-200"><i data-lucide="zap" class="w-6 h-6"></i></div>
+                            <span class="px-2 py-1 bg-violet-50 text-violet-600 text-[10px] font-bold rounded-lg uppercase tracking-wider">${periodBadge}</span>
+                        </div>
+                        <p class="text-slate-500 text-sm font-medium mb-1">Gasto ${suffix}</p>
+                        <h4 class="text-3xl font-black text-[#1E0B42] tracking-tighter">S/. ${totalSpend.toFixed(2)}</h4>
+                    </div>
+                    <div class="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm card-hover group relative overflow-hidden">
+                        <div class="absolute top-0 right-0 w-24 h-24 bg-orange-500/5 rounded-bl-full -mr-10 -mt-10 group-hover:scale-110 transition-transform"></div>
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="w-12 h-12 bg-orange-500 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-orange-100"><i data-lucide="users" class="w-6 h-6"></i></div>
+                            <span class="px-2 py-1 bg-orange-50 text-orange-600 text-[10px] font-bold rounded-lg uppercase tracking-wider">${periodBadge}</span>
+                        </div>
+                        <p class="text-slate-500 text-sm font-medium mb-1">Leads ${suffix}</p>
+                        <h4 class="text-3xl font-black text-[#1E0B42] tracking-tighter">${totalLeads}</h4>
+                    </div>
+                    <div class="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm card-hover group relative overflow-hidden">
+                        <div class="absolute top-0 right-0 w-24 h-24 bg-rose-500/5 rounded-bl-full -mr-10 -mt-10 group-hover:scale-110 transition-transform"></div>
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="w-12 h-12 bg-rose-500 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-rose-100"><i data-lucide="target" class="w-6 h-6"></i></div>
+                            <span class="px-2 py-1 bg-rose-50 text-rose-600 text-[10px] font-bold rounded-lg uppercase tracking-wider">${periodBadge}</span>
+                        </div>
+                        <p class="text-slate-500 text-sm font-medium mb-1">Costo/Lead ${suffix}</p>
+                        <h4 class="text-3xl font-black text-[#1E0B42] tracking-tighter">S/. ${costoLead}</h4>
+                    </div>
+                </div>
+            </section>
+
+            <!-- BLOQUE DE GRÁFICOS -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+
+                <!-- 1. CRECIMIENTO ACUMULADO -->
+                <div class="lg:col-span-12 bg-[#1E0B42] p-6 lg:p-8 rounded-[2.5rem] lg:rounded-[3.5rem] dark-card relative overflow-hidden flex flex-col min-h-[400px] lg:min-h-[420px] card-hover group">
+                    <div class="absolute bottom-0 left-0 w-full h-1/2 bg-gradient-to-t from-orange-600/5 to-transparent"></div>
+                    <div class="flex items-center justify-between mb-12 relative">
+                        <div>
+                            <h3 class="font-bold text-2xl text-white tracking-tight">Crecimiento de Leads</h3>
+                            <p class="text-orange-300/60 text-sm font-medium uppercase tracking-widest">Progreso diario de captación</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">Acumulado</p>
+                            <p class="text-3xl font-black text-orange-400 tracking-tighter">${totalLeads}</p>
+                        </div>
+                    </div>
+                    <div class="relative flex-1 min-h-0">
+                        <canvas id="leadsGrowthChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- 2. LEADS DIARIOS -->
+                <div class="lg:col-span-6 bg-white p-6 lg:p-8 rounded-[2.5rem] lg:rounded-[3.5rem] floating-card border border-slate-100 relative overflow-hidden flex flex-col min-h-[400px] lg:min-h-[420px] card-hover">
+                    <div class="flex items-center justify-between mb-12">
+                        <div>
+                            <h3 class="font-bold text-2xl text-[#1E0B42] tracking-tight">Leads Diarios</h3>
+                            <p class="text-sm text-slate-400 font-medium">Registro de captación por día</p>
+                        </div>
+                        <div class="w-14 h-14 bg-violet-50 rounded-3xl flex items-center justify-center"><i data-lucide="bar-chart-3" class="text-violet-600 w-7 h-7"></i></div>
+                    </div>
+                    <div class="flex-1 min-h-0">
+                        <canvas id="leadsBarChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- 3. TENDENCIA COSTO/LEAD -->
+                <div class="lg:col-span-6 bg-[#1E0B42] p-6 lg:p-8 rounded-[2.5rem] lg:rounded-[3.5rem] dark-card relative overflow-hidden flex flex-col min-h-[400px] lg:min-h-[420px] group card-hover">
+                    <div class="absolute top-0 right-0 w-96 h-96 bg-violet-600/10 rounded-full -mr-48 -mt-48 blur-[100px] group-hover:bg-violet-600/20 transition-all duration-700"></div>
+                    <div class="relative flex items-center justify-between mb-12">
+                        <div>
+                            <div class="flex items-center gap-3 mb-2">
+                                <span class="w-3 h-3 bg-orange-400 rounded-full shadow-[0_0_15px_#FB923C] animate-pulse"></span>
+                                <h3 class="font-bold text-2xl text-white tracking-tight">Tendencia Costo/Lead</h3>
+                            </div>
+                            <p class="text-slate-500 text-sm font-medium">Fluctuación diaria</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Promedio</p>
+                            <p class="text-2xl font-black text-orange-400 tracking-tighter">${costoLeadRaw}</p>
+                        </div>
+                    </div>
+                    <div class="relative flex-1 min-h-0">
+                        <canvas id="leadsLineChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- 4. EMBUDO DE CONVERSIÓN -->
+                <div class="lg:col-span-12 bg-white p-8 lg:p-10 rounded-[3rem] lg:rounded-[4rem] floating-card border border-slate-100 relative overflow-hidden card-hover group mt-4">
+                    <div class="absolute top-0 right-0 p-12 opacity-[0.03] pointer-events-none group-hover:opacity-[0.05] transition-opacity duration-700">
+                        <i data-lucide="filter" class="w-64 h-64 text-[#1E0B42]"></i>
+                    </div>
+                    <div class="mb-12">
+                        <h3 class="font-bold text-3xl text-[#1E0B42] tracking-tight">Embudo de Conversión</h3>
+                        <p class="text-slate-400 font-medium">Análisis de eficiencia del funnel de Leads · ${dateRangeState.applied.label}</p>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-12 items-center">
+                        <div class="md:col-span-2">
+                            <div class="funnel-container">
+                                <div class="funnel-stage stage-reach group/s1">
+                                    <p class="funnel-label text-slate-500">Alcance (Reach)</p>
+                                    <p class="funnel-value text-[#1E0B42]">${reach.toLocaleString()}</p>
+                                    <div class="conversion-tag text-orange-500">
+                                        ${ctr}% CTR
+                                    </div>
+                                </div>
+
+                                <div class="funnel-stage stage-clicks group/s2">
+                                    <p class="funnel-label text-orange-600">Clics en el Enlace</p>
+                                    <p class="funnel-value text-[#1E0B42]">${clicks.toLocaleString()}</p>
+                                    <div class="conversion-tag text-orange-600 bg-orange-50 border-orange-100">
+                                        ${((visits / (clicks || 1)) * 100).toFixed(1)}% VISITA
+                                    </div>
+                                </div>
+
+                                <div class="funnel-stage stage-visits group/s3">
+                                    <p class="funnel-label text-orange-700">Visitas a la página</p>
+                                    <p class="funnel-value text-[#1E0B42]">${visits.toLocaleString()}</p>
+                                    <div class="conversion-tag text-white bg-[#FB923C] border-none shadow-orange-200">
+                                        ${conv}% CONV.
+                                    </div>
+                                </div>
+
+                                <div class="funnel-stage stage-leads group/s4">
+                                    <p class="funnel-label text-orange-100">Leads Finales</p>
+                                    <p class="funnel-value text-white">${totalLeads.toLocaleString()}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-6">
+                            <div class="p-8 bg-violet-50/80 rounded-[2.5rem] border border-violet-100 relative group overflow-hidden">
+                                <div class="absolute top-0 right-0 p-4 opacity-5 group-hover:scale-110 transition-transform"><i data-lucide="mouse-pointer-2" class="w-12 h-12 text-[#1E0B42]"></i></div>
+                                <p class="text-xs font-bold text-violet-400 uppercase tracking-widest mb-4">Costo por Clic Promedio</p>
+                                <div class="flex items-baseline gap-1">
+                                    <p class="text-sm font-bold text-slate-400">S/.</p>
+                                    <p class="text-4xl font-black text-[#1E0B42]">${(totalSpend / (clicks || 1)).toFixed(2)}</p>
+                                </div>
+                                <p class="text-[10px] text-slate-400 mt-2 font-medium">Inversión por cada clic generado</p>
+                            </div>
+
+                            <div class="p-8 bg-[#1E0B42] rounded-[2.5rem] relative overflow-hidden group">
+                                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform"><i data-lucide="user-check" class="w-12 h-12 text-white"></i></div>
+                                <div class="absolute top-0 right-0 w-32 h-32 bg-orange-500/10 rounded-full blur-2xl"></div>
+                                <p class="text-xs font-bold text-violet-300/50 uppercase tracking-widest mb-4">Costo/Lead del Período</p>
+                                <div class="flex items-baseline gap-1">
+                                    <p class="text-sm font-bold text-violet-300/30">S/.</p>
+                                    <p class="text-4xl font-black text-white">${costoLead}</p>
+                                </div>
+                                <p class="text-[10px] text-violet-300/40 mt-2 font-medium">Eficiencia de captación del período</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     `;
+
     lucide.createIcons();
+    initLeadsCharts();
+}
+
+function initLeadsCharts() {
+    Chart.defaults.font.family = 'Outfit';
+    Chart.defaults.color = '#94A3B8';
+
+    const leadsCharts = apiData.leadsCharts || { line: { labels: [], data: [] }, mixed: { labels: [], spend: [], leads: [] } };
+
+    // --- GROWTH CHART (LEADS ACUMULADOS) ---
+    const ctxGrowth = document.getElementById('leadsGrowthChart');
+    if (ctxGrowth) {
+        if (charts.leadsGrowth) charts.leadsGrowth.destroy();
+
+        let cumulative = 0;
+        const cumulativeData = leadsCharts.mixed.leads.map(val => {
+            cumulative += val;
+            return cumulative;
+        });
+
+        const grad = ctxGrowth.getContext('2d').createLinearGradient(0, 0, 0, 400);
+        grad.addColorStop(0, 'rgba(251, 146, 60, 0.2)');
+        grad.addColorStop(1, 'rgba(251, 146, 60, 0)');
+
+        charts.leadsGrowth = new Chart(ctxGrowth, {
+            type: 'line',
+            data: {
+                labels: leadsCharts.mixed.labels,
+                datasets: [{
+                    label: 'Leads Acumulados',
+                    data: cumulativeData,
+                    borderColor: '#FB923C',
+                    backgroundColor: grad,
+                    fill: true,
+                    tension: 0.4,
+                    borderWidth: 5,
+                    pointRadius: 4,
+                    pointBackgroundColor: '#FB923C',
+                    pointBorderColor: '#1E0B42',
+                    pointBorderWidth: 3,
+                    pointHoverRadius: 8,
+                }]
+            },
+            options: {
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: '#1E0B42',
+                        padding: 16,
+                        cornerRadius: 12,
+                        titleColor: '#FB923C',
+                        titleFont: { size: 14, weight: 'bold' },
+                        bodyFont: { size: 16, weight: '900' }
+                    }
+                },
+                scales: {
+                    x: { grid: { display: false }, border: { display: false }, ticks: { color: '#64748B' } },
+                    y: {
+                        grid: { color: 'rgba(255, 255, 255, 0.05)', drawBorder: false },
+                        border: { display: false },
+                        beginAtZero: true,
+                        ticks: { color: '#64748B' }
+                    }
+                }
+            }
+        });
+    }
+
+    // --- TENDENCIA COSTO/LEAD ---
+    const ctxLine = document.getElementById('leadsLineChart');
+    if (ctxLine) {
+        if (charts.leadsLine) charts.leadsLine.destroy();
+
+        const grad = ctxLine.getContext('2d').createLinearGradient(0, 0, 0, 300);
+        grad.addColorStop(0, 'rgba(251, 146, 60, 0.2)');
+        grad.addColorStop(1, 'rgba(251, 146, 60, 0)');
+
+        charts.leadsLine = new Chart(ctxLine, {
+            type: 'line',
+            data: {
+                labels: leadsCharts.line.labels,
+                datasets: [{
+                    label: 'Costo/Lead S/',
+                    data: leadsCharts.line.data,
+                    borderColor: '#FB923C',
+                    backgroundColor: grad,
+                    fill: true,
+                    tension: 0.45,
+                    borderWidth: 4,
+                    pointRadius: 4,
+                    pointBackgroundColor: '#FB923C',
+                    pointBorderColor: '#0F172A',
+                    pointBorderWidth: 2,
+                    pointHoverRadius: 8,
+                    pointHoverBackgroundColor: '#FB923C',
+                    pointHoverBorderColor: '#fff',
+                    pointHoverBorderWidth: 3,
+                }]
+            },
+            options: {
+                maintainAspectRatio: false,
+                interaction: { intersect: false, mode: 'index' },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: '#0F172A',
+                        padding: 16,
+                        cornerRadius: 12,
+                        titleColor: '#FB923C',
+                        titleFont: { size: 14, weight: 'bold' },
+                        bodyColor: '#fff',
+                        bodyFont: { size: 16, weight: '900' },
+                        borderColor: 'rgba(251, 146, 60, 0.2)',
+                        borderWidth: 1,
+                        displayColors: false,
+                        callbacks: {
+                            label: function(context) {
+                                return 'Costo/Lead: S/ ' + context.parsed.y.toFixed(2);
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: { grid: { display: false }, border: { display: false }, ticks: { color: '#475569' } },
+                    y: {
+                        grid: { color: 'rgba(255, 255, 255, 0.03)', drawBorder: false },
+                        border: { display: false },
+                        ticks: { color: '#475569', callback: v => 'S/.' + v }
+                    }
+                }
+            }
+        });
+    }
+
+    // --- LEADS DIARIOS (BARRAS) ---
+    const ctxBar = document.getElementById('leadsBarChart');
+    if (ctxBar) {
+        if (charts.leadsBar) charts.leadsBar.destroy();
+
+        const grad = ctxBar.getContext('2d').createLinearGradient(0, 0, 0, 300);
+        grad.addColorStop(0, '#8B5CF6');
+        grad.addColorStop(1, '#C4B5FD');
+
+        charts.leadsBar = new Chart(ctxBar, {
+            type: 'bar',
+            data: {
+                labels: leadsCharts.mixed.labels,
+                datasets: [{
+                    label: 'Leads',
+                    data: leadsCharts.mixed.leads,
+                    backgroundColor: grad,
+                    borderRadius: 30,
+                    borderSkipped: false,
+                    barThickness: 16,
+                    hoverBackgroundColor: '#7C3AED',
+                }]
+            },
+            options: {
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: '#fff',
+                        titleColor: '#1E0B42',
+                        bodyColor: '#1E0B42',
+                        padding: 12,
+                        cornerRadius: 12,
+                        borderColor: '#F1F5F9',
+                        borderWidth: 1,
+                        shadowBlur: 10,
+                        shadowColor: 'rgba(0,0,0,0.1)'
+                    }
+                },
+                scales: {
+                    x: { grid: { display: false }, border: { display: false } },
+                    y: {
+                        grid: { color: 'rgba(226, 232, 240, 0.4)', drawBorder: false },
+                        border: { display: false }
+                    }
+                }
+            }
+        });
+    }
 }
