@@ -67,10 +67,6 @@
                         <i data-lucide="bar-chart-3" class="w-5 h-5"></i>
                         <span class="font-medium">Métricas Diarias</span>
                     </button>
-                    <button data-section="leads" class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-300 text-violet-200/60 hover:text-white hover:bg-white/5">
-                        <i data-lucide="users" class="w-5 h-5"></i>
-                        <span class="font-medium">Leads</span>
-                    </button>
                 </nav>
 
                 <!-- Brand Footer -->
@@ -88,12 +84,13 @@
         <!-- Main Content -->
         <main class="flex-1 min-h-screen p-4 lg:p-8 overflow-hidden">
             <!-- Header -->
-            <div class="flex items-center justify-between mb-6 lg:mb-8 gap-4">
+            <div class="flex items-center justify-between mb-6 lg:mb-8 gap-4 flex-wrap">
                 <div class="hidden lg:block">
                     <h1 id="page-title" class="text-2xl font-bold text-slate-800">Dashboard de Resultados</h1>
                     <p class="text-slate-500">Visualización en tiempo real de Meta Ads + GHL</p>
                 </div>
-                <div class="flex items-center gap-4 ml-auto">
+                <div class="flex items-center gap-3 ml-auto flex-wrap">
+                    <div id="dataset-toggle-widget"></div>
                     <div class="relative" id="date-range-widget">
                         <button id="date-range-trigger" type="button" class="flex items-center gap-2 bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm text-sm font-medium hover:border-violet-300 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/20">
                             <i data-lucide="calendar" class="w-4 h-4 text-violet-500"></i>

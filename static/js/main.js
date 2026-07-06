@@ -1,4 +1,5 @@
 let currentSection = 'dashboard';
+let dashboardMode = 'mensajes'; // 'mensajes' | 'leads' — qué dataset se muestra en la sección "dashboard"
 let apiData = null;
 let charts = {};
 
@@ -9,6 +10,47 @@ const mobileMenuToggle = document.getElementById('mobile-menu-toggle');
 const sidebar = document.getElementById('sidebar');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
 const pageTitle = document.getElementById('page-title');
+const datasetToggleWidget = document.getElementById('dataset-toggle-widget');
+
+function renderDatasetToggle() {
+    if (!datasetToggleWidget) return;
+    const isMensajes = dashboardMode === 'mensajes';
+
+    datasetToggleWidget.innerHTML = `
+        <div class="flex items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm text-sm font-medium gap-1">
+            <button data-mode="mensajes" class="toggle-mode-btn flex items-center gap-1.5 px-3 py-2 rounded-lg transition-all ${isMensajes ? 'bg-violet-600 text-white shadow-md shadow-violet-200' : 'text-slate-400 hover:text-slate-600'}">
+                <i data-lucide="message-circle" class="w-4 h-4"></i>
+                Mensajes
+                ${isMensajes ? '<span class="ml-1 px-1.5 py-0.5 bg-white/20 rounded text-[9px] font-bold tracking-wider">AUTO</span>' : ''}
+            </button>
+            <button data-mode="leads" class="toggle-mode-btn flex items-center gap-1.5 px-3 py-2 rounded-lg transition-all ${!isMensajes ? 'bg-violet-600 text-white shadow-md shadow-violet-200' : 'text-slate-400 hover:text-slate-600'}">
+                <i data-lucide="users" class="w-4 h-4"></i>
+                Leads
+                ${!isMensajes ? '<span class="ml-1 px-1.5 py-0.5 bg-white/20 rounded text-[9px] font-bold tracking-wider">AUTO</span>' : ''}
+            </button>
+        </div>
+    `;
+    lucide.createIcons();
+
+    datasetToggleWidget.querySelectorAll('.toggle-mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const mode = btn.getAttribute('data-mode');
+            if (mode === dashboardMode) return;
+            dashboardMode = mode;
+            renderDatasetToggle();
+            updatePageTitle();
+            if (currentSection === 'dashboard') renderCurrentSection();
+        });
+    });
+}
+
+function updatePageTitle() {
+    if (currentSection === 'metrics') {
+        pageTitle.textContent = 'Métricas Diarias';
+    } else {
+        pageTitle.textContent = dashboardMode === 'leads' ? 'Campañas de Leads' : 'Dashboard de Resultados';
+    }
+}
 
 // --- CONFIGURACIÓN DE LIMA (ZONA HORARIA ÚNICA) ---
 const TZ = 'America/Lima';
@@ -353,6 +395,7 @@ function onActualizar() {
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initDateRangeWidget();
+    renderDatasetToggle();
     fetchData(dateRangeState.applied.since, dateRangeState.applied.until);
     setupEventListeners();
 });
@@ -392,9 +435,9 @@ async function fetchTodayDelta() {
         const response = await fetch('/api/today');
         const result = await response.json();
 
-        if (result.status === 'success') {
-            if (currentSection === 'dashboard') updateHoyUIMetrics(result.data);
-            if (currentSection === 'leads') updateHoyLeadsUIMetrics(result.leadsData);
+        if (result.status === 'success' && currentSection === 'dashboard') {
+            if (dashboardMode === 'leads') updateHoyLeadsUIMetrics(result.leadsData);
+            else updateHoyUIMetrics(result.data);
         }
     } catch (err) {
         console.warn("Delta Update silenciado:", err);
@@ -473,13 +516,7 @@ function switchSection(section) {
         }
     });
 
-    const titles = {
-        'dashboard': 'Dashboard de Resultados',
-        'metrics': 'Métricas Diarias',
-        'leads': 'Campañas de Leads'
-    };
-    pageTitle.textContent = titles[section] || 'Dashboard';
-
+    updatePageTitle();
     renderCurrentSection();
 }
 
@@ -488,11 +525,10 @@ function renderCurrentSection() {
 
     try {
         if (currentSection === 'dashboard') {
-            renderDashboard();
+            if (dashboardMode === 'leads') renderLeadsSection();
+            else renderDashboard();
         } else if (currentSection === 'metrics') {
             renderMetricsTable();
-        } else if (currentSection === 'leads') {
-            renderLeadsSection();
         }
     } catch (err) {
         console.error("Render Error:", err);
