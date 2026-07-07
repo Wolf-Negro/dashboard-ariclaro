@@ -303,6 +303,17 @@ def fetch_meta_range(since_date, until_date):
 def index():
     return render_template('index.html', client_name=CLIENT_NAME)
 
+@app.route('/api/debug')
+def debug_config():
+    """Diagnóstico temporal: qué cuentas/config está leyendo esta instancia."""
+    return jsonify({
+        "ad_account_ids": AD_ACCOUNT_IDS,
+        "ad_account_count": len(AD_ACCOUNT_IDS),
+        "has_meta_token": bool(ACCESS_TOKEN),
+        "has_ghl_config": bool(GHL_API_KEY and GHL_LOCATION_ID and GHL_PIPELINE_ID),
+        "monthly_budget": MONTHLY_BUDGET
+    })
+
 @app.route('/api/data')
 def get_data():
     since_date = request.args.get('since')
