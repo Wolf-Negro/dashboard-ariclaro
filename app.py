@@ -147,9 +147,12 @@ def process_ghl_data(opportunities, since_date, until_date):
     return daily_counts
 
 def process_meta_data(data):
-    """Procesa insights de Meta (spend, leads, alcance, clics, visitas) y
-    devuelve un array formateado por fecha. Recibe una lista ya filtrada
-    (por bucket de objetivo) y simplemente agrega por date_start."""
+    """Procesa insights de Meta y devuelve un array formateado por fecha.
+    Gasto, alcance, clics, impresiones y visitas se agregan de TODAS las
+    campañas recibidas (sin filtrar por objetivo) — así 'Gasto' refleja la
+    inversión publicitaria real completa. Los leads nativos de Meta, en
+    cambio, solo se cuentan en filas con bucket == 'leads' (campañas con
+    objetivo Clientes Potenciales), para no mezclar leads con mensajes."""
     processed = []
     # Agrupar por fecha ya que podemos tener múltiples cuentas/campañas
     by_date = {}
@@ -161,8 +164,9 @@ def process_meta_data(data):
         visits = 0
         actions = day_entry.get('actions', [])
         for action in actions:
-            # Leads nativos de Meta (formularios de clientes potenciales)
-            if action['action_type'] == 'lead':
+            # Leads nativos de Meta (formularios de clientes potenciales),
+            # solo de campañas con objetivo Leads
+            if action['action_type'] == 'lead' and day_entry.get('_bucket') == 'leads':
                 leads += int(action['value'])
             # Visitas a la página (Landing Page Views)
             if action['action_type'] == 'landing_page_view':
@@ -327,8 +331,7 @@ def get_data():
 
     try:
         raw_data = fetch_meta_range(since_date, until_date)
-        leads_raw = [d for d in raw_data if d.get('_bucket') == 'leads']
-        meta_leads_by_date = {d['date_raw']: d for d in process_meta_data(leads_raw)}
+        meta_leads_by_date = {d['date_raw']: d for d in process_meta_data(raw_data)}
 
         # "Se realiza la llamada": oportunidades de GHL (pipeline/stage configurado)
         ghl_opportunities = fetch_ghl_opportunities(since_date)
@@ -426,8 +429,7 @@ def get_today():
 
     try:
         raw_data = fetch_meta_range(today_str, today_str)
-        leads_raw = [d for d in raw_data if d.get('_bucket') == 'leads']
-        meta_leads_today = process_meta_data(leads_raw)
+        meta_leads_today = process_meta_data(raw_data)
         m = meta_leads_today[0] if meta_leads_today else {"spend": 0.0, "leads": 0, "ctr": 0.0}
 
         ghl_opportunities = fetch_ghl_opportunities(today_str)
