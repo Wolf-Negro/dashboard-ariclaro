@@ -39,12 +39,18 @@ if not AD_ACCOUNT_IDS:
 
 AD_ACCOUNT_IDS = [_normalize_account_id(acc) for acc in AD_ACCOUNT_IDS if acc.strip()]
 
-# Nombres amigables para cada cuenta (mismo orden que AD_ACCOUNT_IDS).
-# Ej: AD_ACCOUNT_NAMES="Distribuidora Claro,CP NUEVA ARI,Respaldo 1,Respaldo 2"
+# Nombres amigables para las cuentas conocidas de Ari Claro.
+# Si AD_ACCOUNT_NAMES está en el env, tiene prioridad; si no, se usan estos defaults.
+_KNOWN_NAMES = {
+    'act_1113903464284461': 'Respaldo Distribuidor Autorizado',
+    'act_358430843504248':  'Distribuidora Claro - ARI',
+    'act_679169489456464':  'CP - NUEVA ARI VR',
+    'act_1542175126905189': 'Respaldo ARI 2',
+}
 _raw_names = os.environ.get('AD_ACCOUNT_NAMES', '')
 _parsed_names = [n.strip() for n in _raw_names.split(',') if n.strip()]
 ACCOUNT_NAMES = {
-    acc_id: (_parsed_names[i] if i < len(_parsed_names) else acc_id)
+    acc_id: (_parsed_names[i] if i < len(_parsed_names) else _KNOWN_NAMES.get(acc_id, acc_id))
     for i, acc_id in enumerate(AD_ACCOUNT_IDS)
 }
 
