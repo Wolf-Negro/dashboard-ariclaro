@@ -40,7 +40,7 @@ const PRESETS = [
 ];
 
 const dateRangeState = {
-    applied: { since: null, until: null, presetKey: 'today', label: 'Hoy' },
+    applied: { since: null, until: null, presetKey: 'thisMonth', label: 'Este mes' },
     pending: { since: null, until: null, presetKey: null },
     calendarBaseYear: null,
     calendarBaseMonth: null
@@ -120,7 +120,8 @@ function computeRangeLabel(p) {
 
 function initDateRangeWidget() {
     const todayStr = getTodayString();
-    dateRangeState.applied = { since: todayStr, until: todayStr, presetKey: 'today', label: 'Hoy' };
+    const { since, until } = computePresetRange('thisMonth', todayStr);
+    dateRangeState.applied = { since, until, presetKey: 'thisMonth', label: 'Este mes' };
     updateTriggerLabel();
 
     if (dateTriggerEl) {
