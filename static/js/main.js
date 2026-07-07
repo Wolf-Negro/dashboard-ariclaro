@@ -1,6 +1,8 @@
 let currentSection = 'dashboard';
 let apiData = null;
 let charts = {};
+let accountsList = [];       // [{id, name}]
+let selectedAccountId = null; // null = todas las cuentas
 
 // Selectors
 const contentArea = document.getElementById('content-area');
@@ -21,6 +23,101 @@ function getTodayString() {
     const options = { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' };
     const formatter = new Intl.DateTimeFormat('en-CA', options); // YYYY-MM-DD
     return formatter.format(new Date());
+}
+
+// ==================================================================
+// SELECTOR DE CUENTA PUBLICITARIA
+// ==================================================================
+
+const accountWidgetEl = document.getElementById('account-selector-widget');
+let accountDropdownOpen = false;
+
+async function loadAccounts() {
+    try {
+        const res = await fetch('/api/accounts');
+        const data = await res.json();
+        accountsList = data.accounts || [];
+    } catch {
+        accountsList = [];
+    }
+    renderAccountSelector();
+}
+
+function renderAccountSelector() {
+    if (!accountWidgetEl || accountsList.length < 2) return;
+
+    const selected = selectedAccountId
+        ? accountsList.find(a => a.id === selectedAccountId)
+        : null;
+    const label = selected ? selected.name : 'Todas las cuentas';
+    const isFiltered = !!selectedAccountId;
+
+    accountWidgetEl.innerHTML = `
+        <button id="account-trigger" type="button" class="flex items-center gap-2 px-4 py-2 rounded-xl border shadow-sm text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/20 ${isFiltered ? 'bg-violet-50 border-violet-300 text-violet-700' : 'bg-white border-slate-200 text-slate-600 hover:border-violet-300'}">
+            <i data-lucide="building-2" class="w-4 h-4 ${isFiltered ? 'text-violet-500' : 'text-slate-400'}"></i>
+            <span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span>
+            <i data-lucide="chevron-down" class="w-4 h-4 ${isFiltered ? 'text-violet-400' : 'text-slate-400'}"></i>
+        </button>
+        <div id="account-dropdown" class="${accountDropdownOpen ? '' : 'hidden'} absolute right-0 mt-2 w-72 bg-white rounded-2xl shadow-2xl border border-slate-100 py-2 z-50">
+            <button data-account-id="" class="account-option w-full text-left px-4 py-3 text-sm transition-colors ${!selectedAccountId ? 'bg-violet-50 text-violet-700 font-semibold' : 'text-slate-600 hover:bg-slate-50'}">
+                <div class="flex items-center gap-3">
+                    <div class="w-7 h-7 rounded-lg flex items-center justify-center ${!selectedAccountId ? 'bg-violet-100' : 'bg-slate-100'}">
+                        <i data-lucide="layers" class="w-3.5 h-3.5 ${!selectedAccountId ? 'text-violet-600' : 'text-slate-400'}"></i>
+                    </div>
+                    <div>
+                        <div class="font-semibold">Todas las cuentas</div>
+                        <div class="text-xs text-slate-400">${accountsList.length} cuentas combinadas</div>
+                    </div>
+                </div>
+            </button>
+            <div class="h-px bg-slate-100 mx-3 my-1"></div>
+            ${accountsList.map((acc, i) => `
+                <button data-account-id="${acc.id}" class="account-option w-full text-left px-4 py-3 text-sm transition-colors ${selectedAccountId === acc.id ? 'bg-violet-50 text-violet-700 font-semibold' : 'text-slate-600 hover:bg-slate-50'}">
+                    <div class="flex items-center gap-3">
+                        <div class="w-7 h-7 rounded-lg flex items-center justify-center ${selectedAccountId === acc.id ? 'bg-violet-100' : 'bg-slate-100'} text-xs font-black ${selectedAccountId === acc.id ? 'text-violet-600' : 'text-slate-500'}">
+                            ${i + 1}
+                        </div>
+                        <div style="min-width:0">
+                            <div class="font-medium" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${acc.name}</div>
+                            <div class="text-xs text-slate-400" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${acc.id}</div>
+                        </div>
+                    </div>
+                </button>
+            `).join('')}
+        </div>
+    `;
+    lucide.createIcons({ nodes: [accountWidgetEl] });
+    attachAccountSelectorEvents();
+}
+
+function attachAccountSelectorEvents() {
+    const trigger = accountWidgetEl.querySelector('#account-trigger');
+    if (trigger) {
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            accountDropdownOpen = !accountDropdownOpen;
+            renderAccountSelector();
+        });
+    }
+    accountWidgetEl.querySelectorAll('.account-option').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const newId = btn.dataset.accountId || null;
+            accountDropdownOpen = false;
+            if (newId !== selectedAccountId) {
+                selectedAccountId = newId;
+                renderAccountSelector();
+                fetchData(dateRangeState.applied.since, dateRangeState.applied.until);
+            } else {
+                renderAccountSelector();
+            }
+        });
+    });
+    document.addEventListener('click', (e) => {
+        if (accountDropdownOpen && accountWidgetEl && !e.composedPath().includes(accountWidgetEl)) {
+            accountDropdownOpen = false;
+            renderAccountSelector();
+        }
+    }, { once: true });
 }
 
 // ==================================================================
@@ -358,6 +455,7 @@ function onActualizar() {
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initDateRangeWidget();
+    loadAccounts();
     fetchData(dateRangeState.applied.since, dateRangeState.applied.until);
     setupEventListeners();
 });
@@ -371,7 +469,8 @@ async function syncWithServer(since, until) {
     try {
         if (!apiData) contentArea.innerHTML = '<div class="flex items-center justify-center min-h-[50vh]"><div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-violet-500"></div></div>';
 
-        const url = `/api/data?since=${since}&until=${until}`;
+        const accountParam = selectedAccountId ? `&account_id=${encodeURIComponent(selectedAccountId)}` : '';
+        const url = `/api/data?since=${since}&until=${until}${accountParam}`;
         const response = await fetch(url);
         const result = await response.json();
 
@@ -394,7 +493,8 @@ async function syncWithServer(since, until) {
 
 async function fetchTodayDelta() {
     try {
-        const response = await fetch('/api/today');
+        const accountParam = selectedAccountId ? `?account_id=${encodeURIComponent(selectedAccountId)}` : '';
+        const response = await fetch(`/api/today${accountParam}`);
         const result = await response.json();
 
         if (result.status === 'success' && currentSection === 'dashboard') {

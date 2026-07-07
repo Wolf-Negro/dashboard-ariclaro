@@ -39,6 +39,15 @@ if not AD_ACCOUNT_IDS:
 
 AD_ACCOUNT_IDS = [_normalize_account_id(acc) for acc in AD_ACCOUNT_IDS if acc.strip()]
 
+# Nombres amigables para cada cuenta (mismo orden que AD_ACCOUNT_IDS).
+# Ej: AD_ACCOUNT_NAMES="Distribuidora Claro,CP NUEVA ARI,Respaldo 1,Respaldo 2"
+_raw_names = os.environ.get('AD_ACCOUNT_NAMES', '')
+_parsed_names = [n.strip() for n in _raw_names.split(',') if n.strip()]
+ACCOUNT_NAMES = {
+    acc_id: (_parsed_names[i] if i < len(_parsed_names) else acc_id)
+    for i, acc_id in enumerate(AD_ACCOUNT_IDS)
+}
+
 MONTHLY_BUDGET = float(os.environ.get('MONTHLY_BUDGET', 12000))
 CLIENT_NAME = os.environ.get('CLIENT_NAME', 'ARI CLARO')
 CURRENCY = os.environ.get('CURRENCY', 'PEN')
@@ -283,20 +292,18 @@ def _fetch_meta_account_data(account_id, since_date, until_date):
 
     return rows
 
-def fetch_meta_range(since_date, until_date):
-    """Trae insights diarios de Meta a NIVEL DE CAMPAÑA para todas las cuentas
-    configuradas en [since, until], una cuenta por hilo en paralelo, y etiqueta
-    cada fila con su bucket ('mensajes' / 'leads' / 'otros') según el objetivo
-    real de la campaña. Así el gasto de campañas de Mensajes nunca se mezcla
-    con el de Leads, y agregar más cuentas no multiplica el tiempo de espera."""
+def fetch_meta_range(since_date, until_date, account_ids=None):
+    """Trae insights diarios de Meta a NIVEL DE CAMPAÑA para las cuentas indicadas
+    (o todas si account_ids es None), una cuenta por hilo en paralelo."""
+    target_ids = account_ids if account_ids else AD_ACCOUNT_IDS
     all_raw_data = []
-    if not AD_ACCOUNT_IDS:
+    if not target_ids:
         return all_raw_data
 
-    with ThreadPoolExecutor(max_workers=len(AD_ACCOUNT_IDS)) as executor:
+    with ThreadPoolExecutor(max_workers=len(target_ids)) as executor:
         futures = [
             executor.submit(_fetch_meta_account_data, account_id, since_date, until_date)
-            for account_id in AD_ACCOUNT_IDS
+            for account_id in target_ids
         ]
         for future in futures:
             all_raw_data.extend(future.result())
@@ -306,6 +313,16 @@ def fetch_meta_range(since_date, until_date):
 @app.route('/')
 def index():
     return render_template('index.html', client_name=CLIENT_NAME)
+
+@app.route('/api/accounts')
+def get_accounts():
+    """Lista de cuentas configuradas con sus nombres amigables."""
+    return jsonify({
+        'accounts': [
+            {'id': acc_id, 'name': ACCOUNT_NAMES.get(acc_id, acc_id)}
+            for acc_id in AD_ACCOUNT_IDS
+        ]
+    })
 
 @app.route('/api/debug')
 def debug_config():
@@ -322,6 +339,7 @@ def debug_config():
 def get_data():
     since_date = request.args.get('since')
     until_date = request.args.get('until')
+    account_id = request.args.get('account_id')
     now = get_peru_now()
     today_str = now.strftime('%Y-%m-%d')
 
@@ -329,8 +347,13 @@ def get_data():
         since_date = today_str
         until_date = today_str
 
+    # Filtrar por cuenta específica si se pide
+    active_account_ids = None
+    if account_id and account_id in AD_ACCOUNT_IDS:
+        active_account_ids = [account_id]
+
     try:
-        raw_data = fetch_meta_range(since_date, until_date)
+        raw_data = fetch_meta_range(since_date, until_date, active_account_ids)
         meta_leads_by_date = {d['date_raw']: d for d in process_meta_data(raw_data)}
 
         # "Se realiza la llamada": oportunidades de GHL (pipeline/stage configurado)
@@ -424,11 +447,16 @@ def get_data():
 
 @app.route('/api/today')
 def get_today():
+    account_id = request.args.get('account_id')
     now = get_peru_now()
     today_str = now.strftime('%Y-%m-%d')
 
+    active_account_ids = None
+    if account_id and account_id in AD_ACCOUNT_IDS:
+        active_account_ids = [account_id]
+
     try:
-        raw_data = fetch_meta_range(today_str, today_str)
+        raw_data = fetch_meta_range(today_str, today_str, active_account_ids)
         meta_leads_today = process_meta_data(raw_data)
         m = meta_leads_today[0] if meta_leads_today else {"spend": 0.0, "leads": 0, "ctr": 0.0}
 
