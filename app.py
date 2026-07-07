@@ -2,6 +2,7 @@ import os
 from flask import Flask, render_template, jsonify, request
 import requests
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 import pytz
 from dotenv import load_dotenv
 
@@ -67,12 +68,18 @@ def date_range_list(since_str, until_str):
         cur += timedelta(days=1)
     return days
 
-def fetch_ghl_opportunities():
-    """Trae TODAS las oportunidades del pipeline/stage configurado en GHL, paginando
-    con meta.nextPageUrl (la API de GHL no soporta filtro de fecha en la búsqueda)."""
+def fetch_ghl_opportunities(since_date=None):
+    """Trae oportunidades del pipeline/stage configurado en GHL, paginando con
+    meta.nextPageUrl (la API de GHL no soporta filtro de fecha en la búsqueda).
+
+    GHL las devuelve ordenadas por createdAt DESCENDENTE (más nuevas primero).
+    Si se pasa since_date, cortamos la paginación en cuanto la última oportunidad
+    de una página ya sea más antigua que el rango pedido — evita traer miles de
+    registros históricos irrelevantes en cada request (con ~2200 oportunidades,
+    traerlas todas tarda >20s y revienta el timeout de Vercel)."""
     if not (GHL_API_KEY and GHL_LOCATION_ID and GHL_PIPELINE_ID):
         print("ADVERTENCIA: faltan variables de entorno de GHL (GHL_API_KEY / GHL_LOCATION_ID / "
-              "GHL_PIPELINE_ID) — Mensajes se mostrará en 0 hasta que se configuren.")
+              "GHL_PIPELINE_ID) — 'Se realiza la llamada' se mostrará en 0 hasta que se configuren.")
         return []
 
     headers = {
@@ -102,7 +109,19 @@ def fetch_ghl_opportunities():
             print(f"Error fetching GHL opportunities: {e}")
             break
 
-        all_opportunities.extend(data.get('opportunities', []))
+        page_opportunities = data.get('opportunities', [])
+        all_opportunities.extend(page_opportunities)
+
+        if since_date and page_opportunities:
+            last_created = page_opportunities[-1].get('createdAt') or page_opportunities[-1].get('dateAdded')
+            if last_created:
+                try:
+                    dt_utc = datetime.fromisoformat(last_created.replace('Z', '+00:00'))
+                    last_date_lima = dt_utc.astimezone(PERU_TZ).strftime('%Y-%m-%d')
+                    if last_date_lima < since_date:
+                        break
+                except ValueError:
+                    pass
 
         next_url = data.get('meta', {}).get('nextPageUrl')
         params = None  # nextPageUrl ya trae sus propios query params
@@ -230,35 +249,53 @@ def fetch_meta_campaign_objectives(account_id):
 
     return objectives
 
+def _fetch_meta_account_data(account_id, since_date, until_date):
+    """Trae objetivos + insights de UNA cuenta y devuelve las filas ya etiquetadas
+    con su bucket. Aislado en su propia función para poder correr una cuenta por
+    hilo (ver fetch_meta_range) — con 3-4+ cuentas, secuencial es demasiado lento
+    para el timeout de una función serverless."""
+    import json
+    objectives = fetch_meta_campaign_objectives(account_id)
+
+    url = f"https://graph.facebook.com/v19.0/{account_id}/insights"
+    params = {
+        'access_token': ACCESS_TOKEN,
+        'level': 'campaign',
+        'fields': 'campaign_id,spend,actions,unique_inline_link_click_ctr,inline_link_click_ctr,reach,impressions,clicks,date_start',
+        'time_increment': 1,
+        'time_range': json.dumps({"since": since_date, "until": until_date}),
+        'limit': '1000'
+    }
+    rows = []
+    try:
+        response = requests.get(url, params=params, timeout=20)
+        response.raise_for_status()
+        res_json = response.json()
+        for entry in res_json.get('data', []):
+            entry['_bucket'] = classify_objective(objectives.get(entry.get('campaign_id'), ''))
+            rows.append(entry)
+    except Exception as e:
+        print(f"Error fetching data for {account_id}: {e}")
+
+    return rows
+
 def fetch_meta_range(since_date, until_date):
     """Trae insights diarios de Meta a NIVEL DE CAMPAÑA para todas las cuentas
-    configuradas en [since, until], y etiqueta cada fila con su bucket
-    ('mensajes' / 'leads' / 'otros') según el objetivo real de la campaña.
-    Así el gasto de campañas de Mensajes nunca se mezcla con el de Leads."""
-    import json
+    configuradas en [since, until], una cuenta por hilo en paralelo, y etiqueta
+    cada fila con su bucket ('mensajes' / 'leads' / 'otros') según el objetivo
+    real de la campaña. Así el gasto de campañas de Mensajes nunca se mezcla
+    con el de Leads, y agregar más cuentas no multiplica el tiempo de espera."""
     all_raw_data = []
+    if not AD_ACCOUNT_IDS:
+        return all_raw_data
 
-    for account_id in AD_ACCOUNT_IDS:
-        objectives = fetch_meta_campaign_objectives(account_id)
-
-        url = f"https://graph.facebook.com/v19.0/{account_id}/insights"
-        params = {
-            'access_token': ACCESS_TOKEN,
-            'level': 'campaign',
-            'fields': 'campaign_id,spend,actions,unique_inline_link_click_ctr,inline_link_click_ctr,reach,impressions,clicks,date_start',
-            'time_increment': 1,
-            'time_range': json.dumps({"since": since_date, "until": until_date}),
-            'limit': '1000'
-        }
-        try:
-            response = requests.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            res_json = response.json()
-            for entry in res_json.get('data', []):
-                entry['_bucket'] = classify_objective(objectives.get(entry.get('campaign_id'), ''))
-                all_raw_data.append(entry)
-        except Exception as e:
-            print(f"Error fetching data for {account_id}: {e}")
+    with ThreadPoolExecutor(max_workers=len(AD_ACCOUNT_IDS)) as executor:
+        futures = [
+            executor.submit(_fetch_meta_account_data, account_id, since_date, until_date)
+            for account_id in AD_ACCOUNT_IDS
+        ]
+        for future in futures:
+            all_raw_data.extend(future.result())
 
     return all_raw_data
 
@@ -279,87 +316,61 @@ def get_data():
 
     try:
         raw_data = fetch_meta_range(since_date, until_date)
-        mensajes_raw = [d for d in raw_data if d.get('_bucket') == 'mensajes']
         leads_raw = [d for d in raw_data if d.get('_bucket') == 'leads']
-
-        meta_mensajes_by_date = {d['date_raw']: d for d in process_meta_data(mensajes_raw)}
         meta_leads_by_date = {d['date_raw']: d for d in process_meta_data(leads_raw)}
 
-        ghl_opportunities = fetch_ghl_opportunities()
+        # "Se realiza la llamada": oportunidades de GHL (pipeline/stage configurado)
+        ghl_opportunities = fetch_ghl_opportunities(since_date)
         ghl_daily = process_ghl_data(ghl_opportunities, since_date, until_date)
 
         processed_data = []
-        processed_leads_data = []
         for date_str in date_range_list(since_date, until_date):
             dt_obj = datetime.strptime(date_str, '%Y-%m-%d')
             display_date = dt_obj.strftime('%d %b')
 
-            m = meta_mensajes_by_date.get(date_str, {})
+            m = meta_leads_by_date.get(date_str, {})
             spend = m.get('spend', 0.0)
-            mensajes = ghl_daily.get(date_str, 0)
+            meta_leads = m.get('leads', 0)
+            llamadas = ghl_daily.get(date_str, 0)
+            leads = meta_leads + llamadas
+
             processed_data.append({
                 "date": display_date,
                 "date_raw": date_str,
                 "spend": spend,
-                "mensajes": mensajes,
+                "leads": leads,
+                "metaLeads": meta_leads,
+                "llamadas": llamadas,
                 "visits": m.get('visits', 0),
                 "reach": m.get('reach', 0),
                 "impressions": m.get('impressions', 0),
                 "clicks": m.get('clicks', 0),
-                "costoMsg": round(spend / mensajes, 2) if mensajes > 0 else 0.0,
+                "costoLead": round(spend / leads, 2) if leads > 0 else 0.0,
                 "ctr": m.get('ctr', 0.0)
-            })
-
-            l = meta_leads_by_date.get(date_str, {})
-            lspend = l.get('spend', 0.0)
-            lleads = l.get('leads', 0)
-            processed_leads_data.append({
-                "date": display_date,
-                "date_raw": date_str,
-                "spend": lspend,
-                "leads": lleads,
-                "visits": l.get('visits', 0),
-                "reach": l.get('reach', 0),
-                "impressions": l.get('impressions', 0),
-                "clicks": l.get('clicks', 0),
-                "costoLead": round(lspend / lleads, 2) if lleads > 0 else 0.0,
-                "ctr": l.get('ctr', 0.0)
             })
 
         # SIEMPRE Invertir: Lo más reciente primero para la tabla
         display_data = list(reversed(processed_data))
-        display_leads_data = list(reversed(processed_leads_data))
 
-        # --- Totales Mensajes (Meta campañas de Mensajes + conteo GHL) ---
         total_spend = sum(d['spend'] for d in processed_data)
-        total_mensajes = sum(d['mensajes'] for d in processed_data)
+        total_leads = sum(d['leads'] for d in processed_data)
         total_visits = sum(d['visits'] for d in processed_data)
         total_reach = sum(d['reach'] for d in processed_data)
         total_impressions = sum(d['impressions'] for d in processed_data)
         total_clicks = sum(d['clicks'] for d in processed_data)
-        avg_costo_msg = round(total_spend / total_mensajes, 2) if total_mensajes > 0 else 0
+        avg_costo_lead = round(total_spend / total_leads, 2) if total_leads > 0 else 0
 
         presupuesto_total = MONTHLY_BUDGET
         presupuesto_consumido = round(total_spend, 2)
         presupuesto_restante = round(max(0, presupuesto_total - presupuesto_consumido), 2)
-
-        # --- Totales Leads (Meta campañas de Leads, leads nativos de Meta) ---
-        total_spend_leads = sum(d['spend'] for d in processed_leads_data)
-        total_leads = sum(d['leads'] for d in processed_leads_data)
-        total_visits_leads = sum(d['visits'] for d in processed_leads_data)
-        total_reach_leads = sum(d['reach'] for d in processed_leads_data)
-        total_impressions_leads = sum(d['impressions'] for d in processed_leads_data)
-        total_clicks_leads = sum(d['clicks'] for d in processed_leads_data)
-        avg_costo_lead = round(total_spend_leads / total_leads, 2) if total_leads > 0 else 0
 
         # LOGS DE AUDITORÍA SOLICITADOS POR EL USUARIO
         print("\n--- AUDITORÍA DE DATA EN TIEMPO REAL ---")
         print(f"Fecha Hoy (Servidor Lima): {today_str}")
         print(f"Periodo consultado: {since_date} a {until_date}")
         print(f"Cuentas Meta Activas: {len(AD_ACCOUNT_IDS)}")
-        print(f"Oportunidades GHL en pipeline: {len(ghl_opportunities)}")
-        print(f"[MENSAJES] Gasto: S/. {total_spend:,.2f} | Mensajes: {total_mensajes} | Costo/Msg: S/. {avg_costo_msg:,.2f}")
-        print(f"[LEADS] Gasto: S/. {total_spend_leads:,.2f} | Leads: {total_leads} | Costo/Lead: S/. {avg_costo_lead:,.2f}")
+        print(f"Oportunidades GHL (Se realiza la llamada): {len(ghl_opportunities)}")
+        print(f"[LEADS] Gasto: S/. {total_spend:,.2f} | Leads: {total_leads} | Costo/Lead: S/. {avg_costo_lead:,.2f}")
         print("----------------------------------------\n")
 
         return jsonify({
@@ -367,53 +378,31 @@ def get_data():
             "period": {"since": since_date, "until": until_date},
             "kpis": {
                 "gastoTotal": f"S/. {presupuesto_consumido:,.2f}",
-                "mensajesTotales": total_mensajes,
+                "leadsTotales": total_leads,
                 "reachTotal": total_reach,
                 "impressionsTotal": total_impressions,
                 "clicksTotal": total_clicks,
                 "visitsTotal": total_visits,
-                "costoPorMsgPromedio": f"S/. {avg_costo_msg:,.2f}",
+                "costoPorLeadPromedio": f"S/. {avg_costo_lead:,.2f}",
                 "presupuestoConsumido": presupuesto_consumido,
                 "presupuestoRestante": presupuesto_restante
             },
             "charts": {
                 "line": {
                     "labels": [d["date"] for d in processed_data],
-                    "data": [d["costoMsg"] for d in processed_data]
+                    "data": [d["costoLead"] for d in processed_data]
                 },
                 "mixed": {
                     "labels": [d["date"] for d in processed_data],
                     "spend": [d["spend"] for d in processed_data],
-                    "mensajes": [d["mensajes"] for d in processed_data]
+                    "leads": [d["leads"] for d in processed_data]
                 },
                 "doughnut": {
                     "labels": ["Consumido", "Restante"],
                     "data": [presupuesto_consumido, presupuesto_restante]
                 }
             },
-            "dailyMetrics": display_data,
-            "leadsKpis": {
-                "gastoTotal": f"S/. {total_spend_leads:,.2f}",
-                "gastoNumerico": round(total_spend_leads, 2),
-                "leadsTotales": total_leads,
-                "reachTotal": total_reach_leads,
-                "impressionsTotal": total_impressions_leads,
-                "clicksTotal": total_clicks_leads,
-                "visitsTotal": total_visits_leads,
-                "costoPorLeadPromedio": f"S/. {avg_costo_lead:,.2f}"
-            },
-            "leadsCharts": {
-                "line": {
-                    "labels": [d["date"] for d in processed_leads_data],
-                    "data": [d["costoLead"] for d in processed_leads_data]
-                },
-                "mixed": {
-                    "labels": [d["date"] for d in processed_leads_data],
-                    "spend": [d["spend"] for d in processed_leads_data],
-                    "leads": [d["leads"] for d in processed_leads_data]
-                }
-            },
-            "leadsDailyMetrics": display_leads_data
+            "dailyMetrics": display_data
         })
 
     except Exception as e:
@@ -426,20 +415,16 @@ def get_today():
 
     try:
         raw_data = fetch_meta_range(today_str, today_str)
-        mensajes_raw = [d for d in raw_data if d.get('_bucket') == 'mensajes']
         leads_raw = [d for d in raw_data if d.get('_bucket') == 'leads']
-
-        meta_mensajes_today = process_meta_data(mensajes_raw)
         meta_leads_today = process_meta_data(leads_raw)
+        m = meta_leads_today[0] if meta_leads_today else {"spend": 0.0, "leads": 0, "ctr": 0.0}
 
-        m = meta_mensajes_today[0] if meta_mensajes_today else {"spend": 0.0, "ctr": 0.0}
-        l = meta_leads_today[0] if meta_leads_today else {"spend": 0.0, "leads": 0, "ctr": 0.0}
+        ghl_opportunities = fetch_ghl_opportunities(today_str)
+        llamadas = process_ghl_data(ghl_opportunities, today_str, today_str).get(today_str, 0)
 
-        ghl_opportunities = fetch_ghl_opportunities()
-        mensajes = process_ghl_data(ghl_opportunities, today_str, today_str).get(today_str, 0)
         spend = m.get('spend', 0.0)
-        lspend = l.get('spend', 0.0)
-        lleads = l.get('leads', 0)
+        meta_leads = m.get('leads', 0)
+        leads = meta_leads + llamadas
 
         return jsonify({
             "status": "success",
@@ -447,17 +432,9 @@ def get_today():
                 "date": now.strftime('%d %b'),
                 "date_raw": today_str,
                 "spend": spend,
-                "mensajes": mensajes,
-                "costoMsg": round(spend / mensajes, 2) if mensajes > 0 else 0.0,
+                "leads": leads,
+                "costoLead": round(spend / leads, 2) if leads > 0 else 0.0,
                 "ctr": m.get('ctr', 0.0)
-            },
-            "leadsData": {
-                "date": now.strftime('%d %b'),
-                "date_raw": today_str,
-                "spend": lspend,
-                "leads": lleads,
-                "costoLead": round(lspend / lleads, 2) if lleads > 0 else 0.0,
-                "ctr": l.get('ctr', 0.0)
             }
         })
     except Exception:
